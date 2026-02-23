@@ -3,9 +3,9 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
     QDialog,
-    QDialogButtonBox,
     QHBoxLayout,
     QLabel,
+    QPushButton,
     QScrollArea,
     QVBoxLayout,
     QWidget,
@@ -32,21 +32,39 @@ class PreviewDialog(QDialog):
         self._accepted = False
 
         main_layout = QVBoxLayout(self)
+        main_layout.setSpacing(12)
+        main_layout.setContentsMargins(20, 20, 20, 20)
+
+        # Title
+        title = QLabel("Redaction Preview")
+        title.setStyleSheet("font-size: 20px; font-weight: bold; color: white;")
+        main_layout.addWidget(title)
 
         warning = QLabel(
-            "<b>Warning:</b> Redaction is permanent and irreversible. "
+            "Warning: Redaction is permanent and irreversible. "
             "The redacted text will be completely removed from the PDF."
         )
         warning.setWordWrap(True)
-        warning.setStyleSheet("color: #c0392b; padding: 8px;")
+        warning.setStyleSheet(
+            "color: #ff6b6b; background: #2a1a1e; border: 1px solid #5b1a2a;"
+            "border-radius: 8px; padding: 10px; font-size: 12px;"
+        )
         main_layout.addWidget(warning)
 
         # Headers
         header_layout = QHBoxLayout()
-        before_header = QLabel("<b>Before (with annotations)</b>")
+        before_header = QLabel("BEFORE")
         before_header.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        after_header = QLabel("<b>After (redacted)</b>")
+        before_header.setStyleSheet(
+            "font-size: 11px; font-weight: bold; color: #e94560;"
+            "letter-spacing: 2px; padding: 6px;"
+        )
+        after_header = QLabel("AFTER")
         after_header.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        after_header.setStyleSheet(
+            "font-size: 11px; font-weight: bold; color: #4ecdc4;"
+            "letter-spacing: 2px; padding: 6px;"
+        )
         header_layout.addWidget(before_header)
         header_layout.addWidget(after_header)
         main_layout.addLayout(header_layout)
@@ -81,13 +99,17 @@ class PreviewDialog(QDialog):
         )
 
         # Buttons
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Confirm Redaction")
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        main_layout.addWidget(buttons)
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setObjectName("ghost")
+        cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(cancel_btn)
+        confirm_btn = QPushButton("Confirm Redaction")
+        confirm_btn.setObjectName("danger")
+        confirm_btn.clicked.connect(self.accept)
+        btn_layout.addWidget(confirm_btn)
+        main_layout.addLayout(btn_layout)
 
         self._populate_preview()
 
@@ -108,6 +130,8 @@ class PreviewDialog(QDialog):
 
         if not pages_with_redactions:
             lbl = QLabel("No redaction annotations found.")
+            lbl.setStyleSheet("color: #888; font-size: 14px; padding: 20px;")
+            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self._before_layout.addWidget(lbl)
             return
 

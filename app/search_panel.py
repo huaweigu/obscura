@@ -33,13 +33,22 @@ class SearchPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+        layout.setContentsMargins(12, 12, 12, 12)
+
+        # Section label
+        section = QLabel("SEARCH")
+        section.setObjectName("section-label")
+        layout.addWidget(section)
 
         # Search input row
         input_row = QHBoxLayout()
+        input_row.setSpacing(6)
         self._search_input = QLineEdit()
         self._search_input.setPlaceholderText("Enter keyword to search…")
         self._search_input.returnPressed.connect(self._on_search)
         self._search_btn = QPushButton("Search")
+        self._search_btn.setObjectName("primary")
         self._search_btn.clicked.connect(self._on_search)
         input_row.addWidget(self._search_input)
         input_row.addWidget(self._search_btn)
@@ -47,6 +56,7 @@ class SearchPanel(QWidget):
 
         # Results count label
         self._count_label = QLabel("")
+        self._count_label.setStyleSheet("color: #888; font-size: 12px;")
         layout.addWidget(self._count_label)
 
         # Results list
@@ -57,10 +67,13 @@ class SearchPanel(QWidget):
 
         # Redact buttons
         btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
         self._redact_all_btn = QPushButton("Redact All")
+        self._redact_all_btn.setObjectName("danger")
         self._redact_all_btn.setEnabled(False)
         self._redact_all_btn.clicked.connect(self._on_redact_all)
         self._redact_selected_btn = QPushButton("Redact Selected")
+        self._redact_selected_btn.setObjectName("danger")
         self._redact_selected_btn.setEnabled(False)
         self._redact_selected_btn.clicked.connect(self._on_redact_selected)
         btn_row.addWidget(self._redact_all_btn)
