@@ -1,4 +1,5 @@
 import os
+import shutil
 from dataclasses import dataclass, field
 
 import fitz
@@ -21,7 +22,9 @@ def image_to_pdf(image_path):
     img_doc = fitz.open(image_path)
     pdf_bytes = img_doc.convert_to_pdf()
     img_doc.close()
-    return fitz.open("pdf", pdf_bytes)
+    doc = fitz.open("pdf", pdf_bytes)
+    doc._pdf_bytes = pdf_bytes  # prevent GC of the backing buffer
+    return doc
 
 
 def find_files(folder, recursive=True):
@@ -54,18 +57,11 @@ def redact_file(file_path, keyword):
         doc = fitz.open(file_path)
 
     match_count = 0
-    ocr_textpages = {}
-
-    # Run OCR for image-sourced docs
-    if is_image:
-        for i in range(len(doc)):
-            page = doc[i]
-            ocr_textpages[i] = page.get_textpage_ocr(language="eng", full=True)
 
     for page_index in range(len(doc)):
         page = doc[page_index]
-        tp = ocr_textpages.get(page_index)
-        if tp:
+        if is_image:
+            tp = page.get_textpage_ocr(language="eng", full=True)
             rects = page.search_for(keyword, textpage=tp)
         else:
             rects = page.search_for(keyword)
@@ -100,17 +96,21 @@ def process_folder(folder, keyword, output_folder, progress_callback=None):
         try:
             doc, match_count = redact_file(file_path, keyword)
 
+            # Build output path preserving subfolder structure
+            out_path = os.path.join(output_folder, rel_path)
+
             if match_count > 0:
                 result.files_with_matches += 1
                 result.total_matches += match_count
-
-                # Build output path preserving subfolder structure
-                out_path = os.path.join(output_folder, rel_path)
                 # Images become PDFs
                 if file_path.lower().endswith(IMAGE_EXTENSIONS):
                     out_path = os.path.splitext(out_path)[0] + ".pdf"
                 os.makedirs(os.path.dirname(out_path), exist_ok=True)
                 save(doc, out_path)
+            else:
+                # Copy unmatched files as-is
+                os.makedirs(os.path.dirname(out_path), exist_ok=True)
+                shutil.copy2(file_path, out_path)
 
             doc.close()
         except Exception as e:

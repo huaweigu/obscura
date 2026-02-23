@@ -103,12 +103,12 @@ class TestProcessFolder:
         assert result.total_matches > 0
         assert len(result.errors) == 0
 
-    def test_only_matched_files_saved(self, sample_tree, output_dir):
+    def test_all_files_copied_to_output(self, sample_tree, output_dir):
         process_folder(str(sample_tree), "SECRET_DATA_123", str(output_dir))
-        # root.pdf and sub/nested.pdf should exist, clean.pdf should not
+        # All files should exist in output
         assert os.path.exists(str(output_dir / "root.pdf"))
         assert os.path.exists(str(output_dir / "sub" / "nested.pdf"))
-        assert not os.path.exists(str(output_dir / "clean.pdf"))
+        assert os.path.exists(str(output_dir / "clean.pdf"))
 
     def test_output_files_are_redacted(self, sample_tree, output_dir):
         process_folder(str(sample_tree), "SECRET_DATA_123", str(output_dir))
