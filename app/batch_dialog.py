@@ -1,3 +1,5 @@
+import os
+
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import (
     QDialog,
@@ -66,7 +68,7 @@ class BatchDialog(QDialog):
         layout.addWidget(QLabel("Output Folder:"))
         row = QHBoxLayout()
         self._output_edit = QLineEdit()
-        self._output_edit.setPlaceholderText("Select folder for redacted output…")
+        self._output_edit.setPlaceholderText("Defaults to <input folder>/redacted")
         row.addWidget(self._output_edit)
         browse_out = QPushButton("Browse…")
         browse_out.clicked.connect(self._browse_output)
@@ -106,10 +108,16 @@ class BatchDialog(QDialog):
         self._close_btn.clicked.connect(self.accept)
         layout.addWidget(self._close_btn)
 
+    def _update_default_output(self):
+        folder = self._input_edit.text().strip()
+        if folder and not self._output_edit.text().strip():
+            self._output_edit.setText(os.path.join(folder, "redacted"))
+
     def _browse_input(self):
         path = QFileDialog.getExistingDirectory(self, "Select Input Folder")
         if path:
             self._input_edit.setText(path)
+            self._update_default_output()
 
     def _browse_output(self):
         path = QFileDialog.getExistingDirectory(self, "Select Output Folder")
@@ -125,8 +133,8 @@ class BatchDialog(QDialog):
             QMessageBox.warning(self, "Missing Input", "Please select an input folder.")
             return
         if not output:
-            QMessageBox.warning(self, "Missing Output", "Please select an output folder.")
-            return
+            output = os.path.join(folder, "redacted")
+            self._output_edit.setText(output)
         if not keyword:
             QMessageBox.warning(self, "Missing Keyword", "Please enter a keyword to redact.")
             return
