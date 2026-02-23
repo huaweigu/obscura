@@ -14,6 +14,9 @@ from app.redactor import apply_redactions, mark_for_redaction, save
 from app.search_panel import SearchPanel, SearchResult
 
 
+IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif")
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -23,6 +26,8 @@ class MainWindow(QMainWindow):
         self._doc = None
         self._file_path = None
         self._search_results = []
+        self._ocr_textpages = {}  # page_index -> fitz.TextPage (for image-based docs)
+        self._is_image_source = False
 
         self._setup_viewer()
         self._setup_search_panel()
@@ -94,25 +99,44 @@ class MainWindow(QMainWindow):
 
     def _open_file(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, "Open PDF", "", "PDF Files (*.pdf)"
+            self,
+            "Open File",
+            "",
+            "Supported Files (*.pdf *.jpg *.jpeg *.png *.bmp *.tiff *.tif);;"
+            "PDF Files (*.pdf);;"
+            "Image Files (*.jpg *.jpeg *.png *.bmp *.tiff *.tif)",
         )
         if not path:
             return
         try:
-            doc = fitz.open(path)
+            is_image = path.lower().endswith(IMAGE_EXTENSIONS)
+            if is_image:
+                doc = self._image_to_pdf(path)
+            else:
+                doc = fitz.open(path)
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Could not open PDF:\n{e}")
+            QMessageBox.critical(self, "Error", f"Could not open file:\n{e}")
             return
 
         self._doc = doc
         self._file_path = path
+        self._is_image_source = is_image
         self._search_results.clear()
+        self._ocr_textpages.clear()
         self._search_panel.clear_results()
         self._viewer.load_document(doc)
 
         self._status_file = f"File: {path.split('/')[-1]}"
         self._status_page = f"Page 1 / {len(doc)}"
         self._update_status()
+
+    @staticmethod
+    def _image_to_pdf(image_path):
+        """Convert an image file into a single-page PDF document in memory."""
+        img_doc = fitz.open(image_path)
+        pdf_bytes = img_doc.convert_to_pdf()
+        img_doc.close()
+        return fitz.open("pdf", pdf_bytes)
 
     def _save_file(self):
         if not self._doc:
@@ -135,14 +159,30 @@ class MainWindow(QMainWindow):
     def _do_search(self, keyword):
         if not self._doc:
             return
+
+        # Run OCR on image-sourced docs if not already cached
+        if self._is_image_source and not self._ocr_textpages:
+            self.statusBar().showMessage("Running OCR…")
+            from PySide6.QtWidgets import QApplication
+            QApplication.processEvents()
+            for i in range(len(self._doc)):
+                page = self._doc[i]
+                self._ocr_textpages[i] = page.get_textpage_ocr(
+                    language="eng", full=True
+                )
+            self._update_status()
+
         results = []
         highlights = {}
         for page_index in range(len(self._doc)):
             page = self._doc[page_index]
-            matches = page.search_for(keyword)
+            tp = self._ocr_textpages.get(page_index)
+            if tp:
+                matches = page.search_for(keyword, textpage=tp)
+            else:
+                matches = page.search_for(keyword)
             for rect in matches:
-                # Extract a short text snippet around the match area
-                snippet = self._extract_snippet(page, rect, keyword)
+                snippet = self._extract_snippet(page, rect, keyword, tp)
                 results.append(SearchResult(page_index, rect, snippet))
                 highlights.setdefault(page_index, []).append(rect)
 
@@ -150,10 +190,12 @@ class MainWindow(QMainWindow):
         self._search_panel.set_results(results)
         self._viewer.set_highlights(highlights)
 
-    def _extract_snippet(self, page, rect, keyword, context_chars=30):
+    def _extract_snippet(self, page, rect, keyword, textpage=None, context_chars=30):
         """Get surrounding text around a match rectangle."""
-        # Get all text on the page
-        text = page.get_text("text")
+        if textpage:
+            text = page.get_text("text", textpage=textpage)
+        else:
+            text = page.get_text("text")
         idx = text.lower().find(keyword.lower())
         if idx == -1:
             return keyword
