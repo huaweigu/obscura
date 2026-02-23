@@ -8,7 +8,7 @@ from app.theme import APP_STYLE
 
 def main():
     app = QApplication(sys.argv)
-    app.setApplicationName("PDF Text Redactor")
+    app.setApplicationName("Text Redactor")
     app.setStyleSheet(APP_STYLE)
     window = MainWindow()
     window.show()

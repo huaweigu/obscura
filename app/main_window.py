@@ -21,7 +21,7 @@ IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif")
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("PDF Text Redactor")
+        self.setWindowTitle("Text Redactor")
         self.resize(1200, 800)
 
         self._doc = None
