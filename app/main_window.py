@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
 )
 
+from app.batch_dialog import BatchDialog
 from app.pdf_viewer import PdfViewer
 from app.preview_dialog import PreviewDialog
 from app.redactor import apply_redactions, mark_for_redaction, save
@@ -69,6 +70,10 @@ class MainWindow(QMainWindow):
         save_act.setShortcut(QKeySequence("Ctrl+Shift+S"))
         save_act.triggered.connect(self._save_file)
         tb.addAction(save_act)
+
+        batch_act = QAction("Batch Redact", self)
+        batch_act.triggered.connect(self._open_batch_dialog)
+        tb.addAction(batch_act)
 
         tb.addSeparator()
 
@@ -153,6 +158,10 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Saved", f"Redacted PDF saved to:\n{path}")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Could not save PDF:\n{e}")
+
+    def _open_batch_dialog(self):
+        dialog = BatchDialog(self)
+        dialog.exec()
 
     # ── Search ────────────────────────────────────────────────
 
