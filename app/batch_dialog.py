@@ -267,3 +267,28 @@ class BatchDialog(QDialog):
 
         self._results_container.setVisible(True)
         self._worker = None
+
+        # Pop up a summary message box
+        if result.errors:
+            icon = QMessageBox.Icon.Warning
+            title = "Redaction Complete (with errors)"
+            msg = (
+                f"Scanned {result.total_files} files.\n"
+                f"{result.files_with_matches} files matched, "
+                f"{result.total_matches} redactions applied.\n"
+                f"{len(result.errors)} file(s) had errors."
+            )
+        elif result.total_matches == 0:
+            icon = QMessageBox.Icon.Information
+            title = "No Matches Found"
+            msg = f"Scanned {result.total_files} files.\nNo matches found for the given keywords."
+        else:
+            icon = QMessageBox.Icon.Information
+            title = "Redaction Complete"
+            msg = (
+                f"Scanned {result.total_files} files.\n"
+                f"{result.files_with_matches} files matched, "
+                f"{result.total_matches} redactions applied."
+            )
+        box = QMessageBox(icon, title, msg, QMessageBox.StandardButton.Ok, self)
+        box.exec()
