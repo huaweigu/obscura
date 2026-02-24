@@ -405,7 +405,7 @@ class BatchDialog(QDialog):
         self._progress_bar.setValue(self._progress_bar.maximum())
         self._worker = None
 
-        self._lbl_redact_matched.findChild(QLabel, "value").setText(str(result.total_matches))
+        self._lbl_redact_matched.findChild(QLabel, "value").setText(str(result.files_with_matches))
         self._lbl_redacted.findChild(QLabel, "value").setText(str(result.total_matches))
 
         if result.errors:
@@ -422,7 +422,8 @@ class BatchDialog(QDialog):
             icon = QMessageBox.Icon.Warning
             title = "Redaction Complete (with errors)"
             msg = (
-                f"Scanned {result.total_files} files ({result.files_with_matches} matched).\n"
+                f"Scanned {result.total_files} files.\n"
+                f"{result.files_with_matches} files matched, "
                 f"{result.total_matches} redactions applied.\n"
                 f"{len(result.errors)} file(s) had errors."
             )
@@ -434,7 +435,8 @@ class BatchDialog(QDialog):
             icon = QMessageBox.Icon.Information
             title = "Redaction Complete"
             msg = (
-                f"Scanned {result.total_files} files ({result.files_with_matches} matched).\n"
+                f"Scanned {result.total_files} files.\n"
+                f"{result.files_with_matches} files matched, "
                 f"{result.total_matches} redactions applied."
             )
         box = QMessageBox(icon, title, msg, QMessageBox.StandardButton.Ok, self)
