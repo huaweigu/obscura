@@ -204,7 +204,7 @@ class BatchDialog(QDialog):
     def _update_default_output(self):
         folder = self._input_edit.text().strip()
         if folder and not self._output_edit.text().strip():
-            self._output_edit.setText(os.path.join(os.path.dirname(folder), "redacted"))
+            self._output_edit.setText(folder.rstrip(os.sep) + "_redacted")
 
     def _browse_input(self):
         path = QFileDialog.getExistingDirectory(self, "Select Input Folder")
@@ -226,7 +226,7 @@ class BatchDialog(QDialog):
             QMessageBox.warning(self, "Missing Input", "Please select an input folder.")
             return
         if not output:
-            output = os.path.join(os.path.dirname(folder), "redacted")
+            output = folder.rstrip(os.sep) + "_redacted"
             self._output_edit.setText(output)
         if not keyword:
             QMessageBox.warning(self, "Missing Keyword", "Please enter a keyword to redact.")
