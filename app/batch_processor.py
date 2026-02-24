@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 import tempfile
 from dataclasses import dataclass, field
@@ -79,6 +80,21 @@ def redact_file(file_path, keywords):
             if rects:
                 match_count += len(rects)
                 mark_for_redaction(page, rects)
+
+    # Also scrub form field values that contain keywords
+    for page_index in range(len(doc)):
+        page = doc[page_index]
+        for widget in page.widgets():
+            val = widget.field_value or ""
+            original_val = val
+            for kw in keywords:
+                if kw.lower() in val.lower():
+                    # Replace keyword occurrences (case-insensitive)
+                    val = re.sub(re.escape(kw), "█" * len(kw), val, flags=re.IGNORECASE)
+            if val != original_val:
+                match_count += 1
+                widget.field_value = val
+                widget.update()
 
     if match_count > 0:
         apply_redactions(doc)

@@ -91,6 +91,28 @@ class TestRedactFile:
         assert count == 0
         doc.close()
 
+    def test_redacts_form_field_values(self, tmp_path):
+        """Form field (widget) values containing keyword should be scrubbed."""
+        path = str(tmp_path / "form.pdf")
+        doc = fitz.open()
+        page = doc.new_page()
+        widget = fitz.Widget()
+        widget.field_type = fitz.PDF_WIDGET_TYPE_TEXT
+        widget.field_name = "Name"
+        widget.field_value = "John Smith"
+        widget.rect = fitz.Rect(72, 72, 300, 92)
+        page.add_widget(widget)
+        doc.save(path)
+        doc.close()
+
+        doc, count = redact_file(path, "Smith")
+        assert count >= 1
+        # Check the widget value is scrubbed
+        for w in doc[0].widgets():
+            if w.field_name == "Name":
+                assert "Smith" not in w.field_value
+        doc.close()
+
 
 class TestProcessFolder:
     def test_processes_folder(self, sample_tree, output_dir):
