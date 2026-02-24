@@ -137,3 +137,115 @@ class TestProcessFolder:
         assert result.errors[0][0] == "bad.pdf"
         # Other files still processed
         assert result.files_with_matches == 2
+
+
+class TestMultiKeyword:
+    """Test multi-keyword redaction and re-run scenarios."""
+
+    @pytest.fixture()
+    def tax_tree(self, tmp_path):
+        """Mimic a tax folder with PDFs and images across subfolders."""
+        # w2/ - PDF with employer name and employee name
+        w2 = tmp_path / "w2"
+        w2.mkdir()
+        doc = fitz.open()
+        page = doc.new_page()
+        page.insert_text((72, 72), (
+            "W-2 Wage and Tax Statement\n"
+            "Employer: Acme Corp\n"
+            "Employee: John Smith\n"
+            "SSN: 123-45-6789\n"
+            "Wages: $150,000"
+        ), fontsize=12)
+        doc.save(str(w2 / "w2_john.pdf"))
+        doc.close()
+
+        # brokerage/ - PDF with account holder
+        brokerage = tmp_path / "brokerage"
+        brokerage.mkdir()
+        doc = fitz.open()
+        page = doc.new_page()
+        page.insert_text((72, 72), (
+            "1099-B Consolidated Statement\n"
+            "Account Holder: John Smith\n"
+            "Acme Corp RSU Sale\n"
+            "Proceeds: $50,000"
+        ), fontsize=12)
+        doc.save(str(brokerage / "1099b.pdf"))
+        doc.close()
+
+        # donation/ - PDF without target keywords
+        donation = tmp_path / "donation"
+        donation.mkdir()
+        doc = fitz.open()
+        page = doc.new_page()
+        page.insert_text((72, 72), (
+            "Charitable Donation Receipt\n"
+            "Organization: Local Food Bank\n"
+            "Amount: $500"
+        ), fontsize=12)
+        doc.save(str(donation / "receipt.pdf"))
+        doc.close()
+
+        # hsa/ - another PDF with employee name
+        hsa = tmp_path / "hsa"
+        hsa.mkdir()
+        doc = fitz.open()
+        page = doc.new_page()
+        page.insert_text((72, 72), (
+            "HSA 1099-SA\n"
+            "Account Holder: John Smith\n"
+            "Distributions: $2,000"
+        ), fontsize=12)
+        doc.save(str(hsa / "1099sa.pdf"))
+        doc.close()
+
+        return tmp_path
+
+    def test_multiple_keywords_single_pass(self, tax_tree, tmp_path):
+        out = tmp_path / "out"
+        result = process_folder(str(tax_tree), ["Acme", "Smith"], str(out))
+        assert result.total_files == 4
+        assert result.files_with_matches == 3  # w2, brokerage, hsa
+        # Verify both keywords are gone
+        doc = fitz.open(str(out / "w2" / "w2_john.pdf"))
+        text = doc[0].get_text("text")
+        assert "Acme" not in text
+        assert "Smith" not in text
+        assert "Wages" in text  # non-target text preserved
+        doc.close()
+
+    def test_unmatched_files_still_copied(self, tax_tree, tmp_path):
+        out = tmp_path / "out"
+        process_folder(str(tax_tree), ["Acme", "Smith"], str(out))
+        # donation receipt has no matches but should still be in output
+        assert os.path.isfile(str(out / "donation" / "receipt.pdf"))
+        doc = fitz.open(str(out / "donation" / "receipt.pdf"))
+        assert "Charitable Donation" in doc[0].get_text("text")
+        doc.close()
+
+    def test_rerun_on_same_output(self, tax_tree, tmp_path):
+        out = tmp_path / "out"
+        # Pass 1: redact employer
+        r1 = process_folder(str(tax_tree), "Acme", str(out))
+        assert r1.files_with_matches == 2  # w2 and brokerage
+
+        # Pass 2: redact employee name in-place on output
+        r2 = process_folder(str(out), "Smith", str(out))
+        assert r2.files_with_matches == 3  # w2, brokerage, hsa
+        assert r2.errors == []
+
+        # Verify both keywords gone from final output
+        doc = fitz.open(str(out / "w2" / "w2_john.pdf"))
+        text = doc[0].get_text("text")
+        assert "Acme" not in text
+        assert "Smith" not in text
+        doc.close()
+
+    def test_full_folder_structure_preserved(self, tax_tree, tmp_path):
+        out = tmp_path / "out"
+        process_folder(str(tax_tree), "Acme", str(out))
+        assert os.path.isdir(str(out / "w2"))
+        assert os.path.isdir(str(out / "brokerage"))
+        assert os.path.isdir(str(out / "donation"))
+        assert os.path.isdir(str(out / "hsa"))
