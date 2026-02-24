@@ -105,14 +105,14 @@ class BatchDialog(QDialog):
         layout.addLayout(output_row)
         layout.addSpacing(16)
 
-        # ── Keyword ──
-        lbl = QLabel("KEYWORD")
+        # ── Keywords ──
+        lbl = QLabel("KEYWORDS")
         lbl.setStyleSheet("font-size: 11px; font-weight: bold; color: #e94560; letter-spacing: 1px;")
         layout.addWidget(lbl)
         layout.addSpacing(6)
 
         self._keyword_edit = QLineEdit()
-        self._keyword_edit.setPlaceholderText("Enter text to redact…")
+        self._keyword_edit.setPlaceholderText("Comma-separated, e.g. secret, confidential")
         layout.addWidget(self._keyword_edit)
         layout.addSpacing(24)
 
@@ -220,7 +220,7 @@ class BatchDialog(QDialog):
     def _start(self):
         folder = self._input_edit.text().strip()
         output = self._output_edit.text().strip()
-        keyword = self._keyword_edit.text().strip()
+        raw_keywords = self._keyword_edit.text().strip()
 
         if not folder:
             QMessageBox.warning(self, "Missing Input", "Please select an input folder.")
@@ -228,8 +228,9 @@ class BatchDialog(QDialog):
         if not output:
             output = folder.rstrip(os.sep) + "_redacted"
             self._output_edit.setText(output)
-        if not keyword:
-            QMessageBox.warning(self, "Missing Keyword", "Please enter a keyword to redact.")
+        keywords = [k.strip() for k in raw_keywords.split(",") if k.strip()]
+        if not keywords:
+            QMessageBox.warning(self, "Missing Keyword", "Please enter at least one keyword to redact.")
             return
 
         self._start_btn.setEnabled(False)
@@ -237,7 +238,7 @@ class BatchDialog(QDialog):
         self._progress_container.setVisible(True)
         self._results_container.setVisible(False)
 
-        self._worker = _BatchWorker(folder, keyword, output)
+        self._worker = _BatchWorker(folder, keywords, output)
         self._worker.progress.connect(self._on_progress)
         self._worker.finished.connect(self._on_finished)
         self._worker.start()
