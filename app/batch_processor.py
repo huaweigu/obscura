@@ -104,11 +104,13 @@ def process_folder(folder, keywords, output_folder, progress_callback=None):
     folder = os.path.abspath(folder)
     output_folder = os.path.abspath(output_folder)
 
-    # Step 1: Copy entire folder to output (if different)
+    # Step 1: Copy entire folder to output (only if it doesn't have files yet)
     if folder != output_folder:
-        if os.path.exists(output_folder):
-            shutil.rmtree(output_folder)
-        shutil.copytree(folder, output_folder)
+        if not os.path.exists(output_folder):
+            shutil.copytree(folder, output_folder)
+        elif not find_files(output_folder):
+            # Output exists but is empty — copy into it
+            shutil.copytree(folder, output_folder, dirs_exist_ok=True)
 
     # Step 2: Find files in the output folder and redact in-place
     files = find_files(output_folder)
