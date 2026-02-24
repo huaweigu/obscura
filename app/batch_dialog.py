@@ -180,9 +180,11 @@ class BatchDialog(QDialog):
         stats_row = QHBoxLayout()
         stats_row.setSpacing(12)
         self._lbl_scanned = self._make_stat_card("0", "Scanned", "#0f3460")
-        self._lbl_matched = self._make_stat_card("0", "Matched", "#0f3460")
+        self._lbl_matched = self._make_stat_card("0", "Files Matched", "#0f3460")
+        self._lbl_occurrences = self._make_stat_card("0", "Occurrences", "#5b1a3a")
         stats_row.addWidget(self._lbl_scanned)
         stats_row.addWidget(self._lbl_matched)
+        stats_row.addWidget(self._lbl_occurrences)
         match_layout.addLayout(stats_row)
 
         match_header = QLabel("MATCHED FILES")
@@ -221,8 +223,8 @@ class BatchDialog(QDialog):
 
         redact_stats_row = QHBoxLayout()
         redact_stats_row.setSpacing(12)
-        self._lbl_redact_matched = self._make_stat_card("0", "Matched", "#0f3460")
-        self._lbl_redacted = self._make_stat_card("0", "Redacted", "#5b1a3a")
+        self._lbl_redact_matched = self._make_stat_card("0", "Files Redacted", "#0f3460")
+        self._lbl_redacted = self._make_stat_card("0", "Occurrences", "#5b1a3a")
         redact_stats_row.addWidget(self._lbl_redact_matched)
         redact_stats_row.addWidget(self._lbl_redacted)
         results_layout.addLayout(redact_stats_row)
@@ -350,6 +352,7 @@ class BatchDialog(QDialog):
         # Update stat cards
         self._lbl_scanned.findChild(QLabel, "value").setText(str(result.total_files))
         self._lbl_matched.findChild(QLabel, "value").setText(str(len(result.matches)))
+        self._lbl_occurrences.findChild(QLabel, "value").setText(str(total_matches))
 
         # Populate matched file list
         if result.matches:
