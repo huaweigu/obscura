@@ -12,6 +12,13 @@ IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif")
 
 
 @dataclass
+class SearchResult:
+    total_files: int = 0
+    matches: list = field(default_factory=list)  # [(rel_path, count)]
+    errors: list = field(default_factory=list)  # [(rel_path, error_msg)]
+
+
+@dataclass
 class BatchResult:
     total_files: int = 0
     files_with_matches: int = 0
@@ -45,6 +52,82 @@ def find_files(folder, recursive=True):
                 results.append(full)
     results.sort()
     return results
+
+
+def search_file(file_path, keywords):
+    """Search a file for keywords without applying any redactions.
+
+    Returns match_count (int).
+    """
+    if isinstance(keywords, str):
+        keywords = [keywords]
+
+    is_image = file_path.lower().endswith(IMAGE_EXTENSIONS)
+    if is_image:
+        doc = image_to_pdf(file_path)
+    else:
+        doc = fitz.open(file_path)
+
+    match_count = 0
+    try:
+        for page_index in range(len(doc)):
+            page = doc[page_index]
+            tp = None
+            if is_image:
+                tp = page.get_textpage_ocr(language="eng", full=True)
+            for kw in keywords:
+                if tp:
+                    rects = page.search_for(kw, textpage=tp)
+                else:
+                    rects = page.search_for(kw)
+                match_count += len(rects)
+
+        # Also check form field values
+        for page_index in range(len(doc)):
+            page = doc[page_index]
+            for widget in page.widgets():
+                val = widget.field_value or ""
+                for kw in keywords:
+                    if kw.lower() in val.lower():
+                        match_count += len(re.findall(re.escape(kw), val, flags=re.IGNORECASE))
+    finally:
+        doc.close()
+
+    return match_count
+
+
+def search_folder(folder, keywords, progress_callback=None):
+    """Search all supported files in a folder for keywords (no redaction).
+
+    Args:
+        folder: Folder path to search.
+        keywords: A string or list of strings to search for.
+        progress_callback: Optional callable(file_index, total, current_file, match_count).
+
+    Returns:
+        SearchResult with matched files and counts.
+    """
+    folder = os.path.abspath(folder)
+    files = find_files(folder)
+    result = SearchResult(total_files=len(files))
+
+    if isinstance(keywords, str):
+        keywords = [keywords]
+
+    for i, file_path in enumerate(files):
+        rel_path = os.path.relpath(file_path, folder)
+        match_count = 0
+        try:
+            match_count = search_file(file_path, keywords)
+            if match_count > 0:
+                result.matches.append((rel_path, match_count))
+        except Exception as e:
+            result.errors.append((rel_path, str(e)))
+
+        if progress_callback:
+            progress_callback(i, len(files), rel_path, match_count)
+
+    return result
 
 
 def redact_file(file_path, keywords):
