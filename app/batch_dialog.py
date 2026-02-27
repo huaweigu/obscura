@@ -89,13 +89,13 @@ class BatchDialog(QDialog):
         layout.addSpacing(4)
 
         subtitle = QLabel("Redact keywords across all PDFs and images in a folder.")
-        subtitle.setStyleSheet("font-size: 13px; color: #888;")
+        subtitle.setStyleSheet("font-size: 13px; color: #a0a8b8;")
         layout.addWidget(subtitle)
         layout.addSpacing(24)
 
         # ── Input folder ──
         lbl = QLabel("INPUT FOLDER")
-        lbl.setStyleSheet("font-size: 11px; font-weight: bold; color: #e94560; letter-spacing: 1px;")
+        lbl.setStyleSheet("font-size: 11px; font-weight: 600; color: #a0a8b8; letter-spacing: 1px;")
         layout.addWidget(lbl)
         layout.addSpacing(6)
 
@@ -115,7 +115,7 @@ class BatchDialog(QDialog):
 
         # ── Output folder ──
         lbl = QLabel("OUTPUT FOLDER")
-        lbl.setStyleSheet("font-size: 11px; font-weight: bold; color: #e94560; letter-spacing: 1px;")
+        lbl.setStyleSheet("font-size: 11px; font-weight: 600; color: #a0a8b8; letter-spacing: 1px;")
         layout.addWidget(lbl)
         layout.addSpacing(6)
 
@@ -134,7 +134,7 @@ class BatchDialog(QDialog):
 
         # ── Keywords ──
         lbl = QLabel("KEYWORDS")
-        lbl.setStyleSheet("font-size: 11px; font-weight: bold; color: #e94560; letter-spacing: 1px;")
+        lbl.setStyleSheet("font-size: 11px; font-weight: 600; color: #a0a8b8; letter-spacing: 1px;")
         layout.addWidget(lbl)
         layout.addSpacing(6)
 
@@ -164,7 +164,7 @@ class BatchDialog(QDialog):
         progress_layout.addWidget(self._progress_bar)
 
         self._file_label = QLabel("")
-        self._file_label.setStyleSheet("color: #888; font-size: 12px;")
+        self._file_label.setStyleSheet("color: #a0a8b8; font-size: 12px;")
         self._file_label.setWordWrap(True)
         progress_layout.addWidget(self._file_label)
 
@@ -181,14 +181,14 @@ class BatchDialog(QDialog):
         stats_row.setSpacing(12)
         self._lbl_scanned = self._make_stat_card("0", "Scanned", "#0f3460")
         self._lbl_matched = self._make_stat_card("0", "Files Matched", "#0f3460")
-        self._lbl_occurrences = self._make_stat_card("0", "Occurrences", "#5b1a3a")
+        self._lbl_occurrences = self._make_stat_card("0", "Occurrences", "#0f3460")
         stats_row.addWidget(self._lbl_scanned)
         stats_row.addWidget(self._lbl_matched)
         stats_row.addWidget(self._lbl_occurrences)
         match_layout.addLayout(stats_row)
 
         match_header = QLabel("MATCHED FILES")
-        match_header.setStyleSheet("font-size: 11px; font-weight: bold; color: #e94560; letter-spacing: 1px; margin-top: 8px;")
+        match_header.setStyleSheet("font-size: 11px; font-weight: 600; color: #a0a8b8; letter-spacing: 1px; margin-top: 8px;")
         match_layout.addWidget(match_header)
 
         self._match_list = QTextEdit()
@@ -224,7 +224,7 @@ class BatchDialog(QDialog):
         redact_stats_row = QHBoxLayout()
         redact_stats_row.setSpacing(12)
         self._lbl_redact_matched = self._make_stat_card("0", "Files Redacted", "#0f3460")
-        self._lbl_redacted = self._make_stat_card("0", "Occurrences", "#5b1a3a")
+        self._lbl_redacted = self._make_stat_card("0", "Occurrences", "#0f3460")
         redact_stats_row.addWidget(self._lbl_redact_matched)
         redact_stats_row.addWidget(self._lbl_redacted)
         results_layout.addLayout(redact_stats_row)

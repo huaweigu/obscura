@@ -37,7 +37,7 @@ from app.theme import APP_STYLE
 def main():
     _ensure_tessdata()
     app = QApplication(sys.argv)
-    app.setApplicationName("Text Redactor")
+    app.setApplicationName("Obscura")
     app.setStyleSheet(APP_STYLE)
     window = MainWindow()
     window.show()

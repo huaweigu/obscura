@@ -56,7 +56,7 @@ class SearchPanel(QWidget):
 
         # Results count label
         self._count_label = QLabel("")
-        self._count_label.setStyleSheet("color: #888; font-size: 12px;")
+        self._count_label.setStyleSheet("color: #a0a8b8; font-size: 12px;")
         layout.addWidget(self._count_label)
 
         # Results list

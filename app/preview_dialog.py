@@ -57,13 +57,13 @@ class PreviewDialog(QDialog):
         before_header.setAlignment(Qt.AlignmentFlag.AlignCenter)
         before_header.setStyleSheet(
             "font-size: 11px; font-weight: bold; color: #e94560;"
-            "letter-spacing: 2px; padding: 6px;"
+            "letter-spacing: 1px; padding: 6px;"
         )
         after_header = QLabel("AFTER")
         after_header.setAlignment(Qt.AlignmentFlag.AlignCenter)
         after_header.setStyleSheet(
             "font-size: 11px; font-weight: bold; color: #4ecdc4;"
-            "letter-spacing: 2px; padding: 6px;"
+            "letter-spacing: 1px; padding: 6px;"
         )
         header_layout.addWidget(before_header)
         header_layout.addWidget(after_header)
@@ -130,7 +130,7 @@ class PreviewDialog(QDialog):
 
         if not pages_with_redactions:
             lbl = QLabel("No redaction annotations found.")
-            lbl.setStyleSheet("color: #888; font-size: 14px; padding: 20px;")
+            lbl.setStyleSheet("color: #a0a8b8; font-size: 14px; padding: 20px;")
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self._before_layout.addWidget(lbl)
             return

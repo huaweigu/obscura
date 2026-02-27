@@ -24,8 +24,8 @@ class TestPdfViewer:
         doc = fitz.open(sample_pdf)
         viewer.load_document(doc)
 
-        viewer.set_zoom(0.1)
-        assert viewer.zoom == 0.5  # clamped to min
+        viewer.set_zoom(0.01)
+        assert viewer.zoom == 0.05  # clamped to min
 
         viewer.set_zoom(10.0)
         assert viewer.zoom == 5.0  # clamped to max
