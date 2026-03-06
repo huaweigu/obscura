@@ -1,4 +1,3 @@
-import fitz
 
 
 def mark_for_redaction(page, rects, fill=(0, 0, 0)):

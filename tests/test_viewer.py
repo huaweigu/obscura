@@ -1,5 +1,4 @@
 import fitz
-import pytest
 
 from app.pdf_viewer import PdfViewer
 

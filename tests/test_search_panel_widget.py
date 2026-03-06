@@ -1,6 +1,4 @@
 import fitz
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QListWidget
 
 from app.search_panel import SearchPanel, SearchResult
 

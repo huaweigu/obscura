@@ -1,11 +1,21 @@
 import fitz
-from PySide6.QtCore import Qt, Signal, QRect
-from PySide6.QtGui import QImage, QPixmap, QPainter, QColor
-from PySide6.QtWidgets import QScrollArea, QWidget, QVBoxLayout, QLabel, QGraphicsDropShadowEffect
+from PySide6.QtCore import QRect, Qt, Signal
+from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPixmap
+from PySide6.QtWidgets import (
+    QGraphicsDropShadowEffect,
+    QLabel,
+    QLineEdit,
+    QScrollArea,
+    QVBoxLayout,
+    QWidget,
+)
 
 
 class PageLabel(QLabel):
     """A label that renders a single PDF page and optional highlight/selection overlays."""
+
+    # Signal for in-place edit commit (page_index, span_info dict, new_text)
+    text_edit_committed = Signal(int, dict, str)
 
     def __init__(self, page_index=0, parent=None):
         super().__init__(parent)
@@ -20,6 +30,11 @@ class PageLabel(QLabel):
         self._selecting = False
         self._text_selection_enabled = False
         self._active_highlight = None  # fitz.Rect in page coordinates
+        # Editor mode state
+        self._editor_mode_enabled = False
+        # In-place edit state
+        self._inline_editor = None  # active QLineEdit overlay
+        self._editing_span = None  # span dict being edited
 
     def set_active_highlight(self, rect):
         """Set a single rect as the active (focused) highlight."""
@@ -32,9 +47,17 @@ class PageLabel(QLabel):
 
     def set_text_selection_enabled(self, enabled):
         self._text_selection_enabled = enabled
-        self.setCursor(
-            Qt.CursorShape.IBeamCursor if enabled else Qt.CursorShape.ArrowCursor
-        )
+        if enabled:
+            self.setCursor(Qt.CursorShape.IBeamCursor)
+        elif not self._editor_mode_enabled:
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+
+    def set_editor_mode_enabled(self, enabled):
+        self._editor_mode_enabled = enabled
+        if enabled:
+            self.setCursor(Qt.CursorShape.PointingHandCursor)
+        elif not self._text_selection_enabled:
+            self.setCursor(Qt.CursorShape.ArrowCursor)
 
     def set_highlights(self, rects, page_rect, scale):
         self.highlights = rects
@@ -68,6 +91,17 @@ class PageLabel(QLabel):
         return page.get_text("text", clip=clip).strip()
 
     def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self._editor_mode_enabled:
+            # If clicking outside an active inline editor, commit it first
+            if self._inline_editor:
+                self._commit_inline_edit()
+                return
+
+            pos = event.position()
+            pdf_x = pos.x() / self._scale
+            pdf_y = pos.y() / self._scale
+            self._start_inline_edit(pdf_x, pdf_y)
+            return
         if not self._text_selection_enabled:
             return
         if event.button() == Qt.MouseButton.LeftButton:
@@ -76,6 +110,97 @@ class PageLabel(QLabel):
             self._selection_end = self._selection_start
             self._selection_rect = None
             self.update()
+
+    # ── In-place text editing ────────────────────────────────
+
+    def _start_inline_edit(self, pdf_x, pdf_y):
+        """Show a QLineEdit overlay on top of the clicked text span."""
+        from app.text_editor import get_span_at_point
+
+        # Need the fitz page — walk up to PdfViewer to get the doc
+        viewer = self.parent()
+        while viewer and not isinstance(viewer, PdfViewer):
+            viewer = viewer.parent()
+        if not viewer or not viewer.doc:
+            return
+        if self._page_index >= len(viewer.doc):
+            return
+
+        page = viewer.doc[self._page_index]
+        span = get_span_at_point(page, fitz.Point(pdf_x, pdf_y))
+        if span is None:
+            return
+
+        self._editing_span = span
+        bbox = span["bbox"]  # (x0, y0, x1, y1) in PDF coords
+
+        # Convert bbox to widget coords
+        wx = int(bbox[0] * self._scale)
+        wy = int(bbox[1] * self._scale)
+        ww = int((bbox[2] - bbox[0]) * self._scale)
+        wh = int((bbox[3] - bbox[1]) * self._scale)
+
+        # Scaled font size for the editor
+        scaled_font_size = max(8, int(span["size"] * self._scale * 0.85))
+
+        editor = QLineEdit(self)
+        editor.setText(span["text"])
+        editor.setGeometry(wx, wy, max(ww, 60), max(wh, 20))
+        editor.setFont(QFont("Helvetica", scaled_font_size))
+        editor.setStyleSheet(
+            "QLineEdit {"
+            "  background: rgba(255, 255, 255, 230);"
+            "  border: 2px solid #4a9eff;"
+            "  border-radius: 2px;"
+            "  color: #111;"
+            "  padding: 0px 2px;"
+            "  selection-background-color: #4a9eff;"
+            "}"
+        )
+        editor.selectAll()
+        editor.setFocus()
+        editor.show()
+
+        editor.returnPressed.connect(self._commit_inline_edit)
+        editor.installEventFilter(self)
+
+        self._inline_editor = editor
+
+    def _commit_inline_edit(self):
+        """Commit the inline edit and emit signal."""
+        if not self._inline_editor or not self._editing_span:
+            return
+
+        new_text = self._inline_editor.text().strip()
+        span = self._editing_span
+
+        # Clean up
+        self._inline_editor.deleteLater()
+        self._inline_editor = None
+        self._editing_span = None
+
+        if new_text and new_text != span["text"]:
+            self.text_edit_committed.emit(self._page_index, span, new_text)
+
+    def _cancel_inline_edit(self):
+        """Cancel the inline edit without committing."""
+        if self._inline_editor:
+            self._inline_editor.deleteLater()
+            self._inline_editor = None
+            self._editing_span = None
+
+    def eventFilter(self, obj, event):
+        """Handle Escape key and focus-out on the inline editor."""
+        if obj is self._inline_editor:
+            if event.type() == event.Type.KeyPress:
+                if event.key() == Qt.Key.Key_Escape:
+                    self._cancel_inline_edit()
+                    return True
+            elif event.type() == event.Type.FocusOut:
+                # Commit on focus loss (clicking elsewhere)
+                self._commit_inline_edit()
+                return True
+        return super().eventFilter(obj, event)
 
     def mouseMoveEvent(self, event):
         if not self._selecting:
@@ -142,6 +267,7 @@ class PdfViewer(QScrollArea):
 
     page_changed = Signal(int)  # emits 1-based page number
     zoom_changed = Signal(float)  # emits current zoom level
+    text_edit_committed = Signal(int, dict, str)  # page_index, span_info, new_text
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -159,6 +285,7 @@ class PdfViewer(QScrollArea):
         self._highlights = {}  # page_index -> list of fitz.Rect
         self._last_reported_page = -1
         self._text_selection_enabled = False
+        self._editor_mode_enabled = False
 
         self.verticalScrollBar().valueChanged.connect(self._on_scroll)
 
@@ -208,7 +335,12 @@ class PdfViewer(QScrollArea):
         lbl = PageLabel(page_index=page_index)
         lbl.setPixmap(qpixmap)
         lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lbl._scale = self._zoom  # always set scale for coordinate conversion
         lbl.set_text_selection_enabled(self._text_selection_enabled)
+        lbl.set_editor_mode_enabled(self._editor_mode_enabled)
+
+        # Connect editor mode signal
+        lbl.text_edit_committed.connect(self.text_edit_committed)
 
         # Drop shadow
         shadow = QGraphicsDropShadowEffect()
@@ -309,6 +441,12 @@ class PdfViewer(QScrollArea):
         """Clear text selection on all pages."""
         for lbl in self._page_labels:
             lbl.clear_selection()
+
+    def set_editor_mode_enabled(self, enabled):
+        """Enable or disable editor mode on all pages."""
+        self._editor_mode_enabled = enabled
+        for lbl in self._page_labels:
+            lbl.set_editor_mode_enabled(enabled)
 
     def refresh(self):
         """Re-render all pages (e.g. after redaction is applied)."""

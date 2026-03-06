@@ -1,5 +1,4 @@
 import fitz
-import pytest
 
 from app.preview_dialog import PreviewDialog, _render_page
 from app.redactor import mark_for_redaction
@@ -36,7 +35,7 @@ class TestPreviewDialog:
     def test_no_redactions_shows_message(self, qapp, sample_pdf):
         doc = fitz.open(sample_pdf)
         # No redaction annotations added
-        dialog = PreviewDialog(doc)
+        PreviewDialog(doc)
         # Should not crash; the "no annotations" label is shown
         doc.close()
 

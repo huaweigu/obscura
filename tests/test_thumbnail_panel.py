@@ -1,5 +1,4 @@
 import fitz
-import pytest
 
 from app.thumbnail_panel import ThumbnailPanel
 

@@ -1,5 +1,4 @@
 import fitz
-import pytest
 
 from app.main_window import MainWindow
 from app.redactor import apply_redactions, mark_for_redaction, save

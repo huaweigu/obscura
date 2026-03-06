@@ -1,8 +1,9 @@
 """E2E tests for core single-file redaction workflow."""
 
 import fitz
+from PySide6.QtWidgets import QFileDialog, QMessageBox
+
 from app.preview_dialog import PreviewDialog
-from PySide6.QtWidgets import QMessageBox, QFileDialog
 
 
 class TestSearchRedactSave:

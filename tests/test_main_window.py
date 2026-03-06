@@ -1,8 +1,5 @@
-import fitz
-import pytest
 
-from app.main_window import MainWindow, SegmentedControl, WelcomeWidget
-
+from app.main_window import SegmentedControl, WelcomeWidget
 
 # ── TestMainWindowInit ──────────────────────────────────────
 

@@ -1,5 +1,4 @@
 import fitz
-import pytest
 
 from app.toc_panel import TocPanel
 

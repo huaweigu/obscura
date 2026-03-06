@@ -32,7 +32,7 @@ QToolBar QToolButton:pressed {
 QToolBar::separator {
     background: #0f3460;
     width: 1px;
-    margin: 4px 8px;
+    margin: 4px 10px;
 }
 
 /* ── Status Bar ── */
@@ -134,6 +134,85 @@ QPushButton#ghost:hover, QPushButton#close:hover {
 QPushButton#browse {
     padding: 8px 14px;
     font-size: 12px;
+}
+
+/* ── Segmented Control ── */
+SegmentedControl {
+    background: #0f3460;
+    border-radius: 8px;
+    padding: 2px;
+}
+SegmentedControl QPushButton {
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    padding: 4px 14px;
+    color: #a0a8b8;
+    font-size: 12px;
+    font-weight: bold;
+    min-width: 48px;
+}
+SegmentedControl QPushButton:hover {
+    color: #e0e0e0;
+    background: rgba(74, 158, 255, 0.15);
+}
+SegmentedControl QPushButton:checked {
+    background: #4a9eff;
+    color: white;
+}
+
+/* ── Page Indicator ── */
+QLabel#page-indicator {
+    background: #0f3460;
+    color: #e0e0e0;
+    font-size: 13px;
+    font-weight: bold;
+    border-radius: 10px;
+    padding: 4px 10px;
+}
+
+/* ── Zoom Combo ── */
+QComboBox#zoom-combo {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    padding: 4px 8px;
+    color: #a0a8b8;
+    font-size: 12px;
+    font-weight: bold;
+}
+QComboBox#zoom-combo:hover {
+    border-color: #0f3460;
+    background: #0f3460;
+}
+QComboBox#zoom-combo:focus {
+    border-color: #4a9eff;
+}
+QComboBox#zoom-combo::drop-down {
+    border: none;
+    width: 16px;
+}
+QComboBox#zoom-combo::down-arrow {
+    image: none;
+    border: none;
+    width: 0;
+}
+QComboBox#zoom-combo QAbstractItemView {
+    background: #16213e;
+    border: 1px solid #0f3460;
+    border-radius: 6px;
+    color: #e0e0e0;
+    selection-background-color: #4a9eff;
+    padding: 4px;
+    font-size: 12px;
+}
+QComboBox#zoom-combo QLineEdit {
+    background: transparent;
+    border: none;
+    padding: 0;
+    color: #a0a8b8;
+    font-size: 12px;
+    font-weight: bold;
 }
 
 /* ── List Widget ── */
@@ -344,5 +423,10 @@ QMessageBox {
 }
 QMessageBox QLabel {
     color: #e0e0e0;
+}
+
+/* ── Welcome Widget (Stacked) ── */
+QStackedWidget {
+    background: #12121f;
 }
 """

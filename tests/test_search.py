@@ -1,5 +1,4 @@
 import fitz
-import pytest
 
 from app.search_panel import SearchResult
 

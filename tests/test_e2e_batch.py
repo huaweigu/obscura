@@ -8,7 +8,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 
 class TestBatchSearchAndRedact:
     def test_batch_search_then_redact(self, qapp, batch_tree, tmp_path, monkeypatch):
-        from app.batch_dialog import BatchDialog, _SearchWorker, _BatchWorker
+        from app.batch_dialog import BatchDialog, _BatchWorker, _SearchWorker
 
         dialog = BatchDialog()
         dialog._input_edit.setText(str(batch_tree))

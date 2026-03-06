@@ -3,17 +3,22 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 import fitz
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QComboBox,
     QDockWidget,
     QFileDialog,
+    QHBoxLayout,
     QLabel,
-    QLineEdit,
     QMainWindow,
     QMessageBox,
-    QStyle,
+    QPushButton,
+    QSizePolicy,
+    QStackedWidget,
     QTabWidget,
+    QVBoxLayout,
+    QWidget,
 )
 
 from app.batch_dialog import BatchDialog
@@ -21,12 +26,121 @@ from app.pdf_viewer import PdfViewer
 from app.preview_dialog import PreviewDialog
 from app.redactor import apply_redactions, mark_for_redaction, save
 from app.search_panel import SearchPanel, SearchResult
+from app.text_editor import replace_text
 from app.thumbnail_panel import ThumbnailPanel
 from app.toc_panel import TocPanel
 
-
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif")
 
+
+# ── Segmented Control Widget ────────────────────────────────
+
+class SegmentedControl(QWidget):
+    """A pill-style segmented control with mutually exclusive buttons."""
+
+    mode_changed = Signal(str)  # emits mode name
+
+    def __init__(self, modes, parent=None):
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(2, 2, 2, 2)
+        layout.setSpacing(0)
+
+        self._buttons: dict[str, QPushButton] = {}
+        self._active_mode = None
+
+        for i, (key, label) in enumerate(modes):
+            btn = QPushButton(label)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setCheckable(True)
+            btn.setFixedHeight(28)
+            btn.setMinimumWidth(56)
+
+            # Corner rounding: left, middle, or right
+            if i == 0:
+                btn.setProperty("segment", "left")
+            elif i == len(modes) - 1:
+                btn.setProperty("segment", "right")
+            else:
+                btn.setProperty("segment", "middle")
+
+            btn.clicked.connect(lambda checked, k=key: self._on_clicked(k))
+            layout.addWidget(btn)
+            self._buttons[key] = btn
+
+    def _on_clicked(self, mode):
+        self.set_active(mode)
+        self.mode_changed.emit(mode)
+
+    def set_active(self, mode):
+        self._active_mode = mode
+        for key, btn in self._buttons.items():
+            btn.setChecked(key == mode)
+
+    def active_mode(self):
+        return self._active_mode
+
+
+# ── Welcome Widget ──────────────────────────────────────────
+
+class WelcomeWidget(QWidget):
+    """Shown when no documents are open."""
+
+    open_requested = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAcceptDrops(True)
+
+        layout = QVBoxLayout(self)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.setSpacing(16)
+
+        title = QLabel("Obscura")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setStyleSheet(
+            "font-size: 42px; font-weight: bold; color: #4a9eff;"
+            "background: transparent; border: none;"
+        )
+        layout.addWidget(title)
+
+        subtitle = QLabel("PDF Viewer, Redactor & Editor")
+        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        subtitle.setStyleSheet(
+            "font-size: 15px; color: #a0a8b8;"
+            "background: transparent; border: none;"
+        )
+        layout.addWidget(subtitle)
+
+        layout.addSpacing(24)
+
+        open_btn = QPushButton("Open File")
+        open_btn.setObjectName("primary")
+        open_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        open_btn.setFixedWidth(180)
+        open_btn.clicked.connect(self.open_requested.emit)
+        layout.addWidget(open_btn, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        layout.addSpacing(8)
+
+        hint = QLabel("or drag and drop files here")
+        hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        hint.setStyleSheet(
+            "font-size: 12px; color: #666;"
+            "background: transparent; border: none;"
+        )
+        layout.addWidget(hint)
+
+        shortcut_hint = QLabel("Ctrl+O")
+        shortcut_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        shortcut_hint.setStyleSheet(
+            "font-size: 11px; color: #555;"
+            "background: transparent; border: none;"
+        )
+        layout.addWidget(shortcut_hint)
+
+
+# ── Document State ──────────────────────────────────────────
 
 @dataclass
 class DocumentState:
@@ -40,6 +154,8 @@ class DocumentState:
     is_image_source: bool = False
 
 
+# ── Main Window ─────────────────────────────────────────────
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -51,7 +167,7 @@ class MainWindow(QMainWindow):
         self._connected_viewer: PdfViewer | None = None
         self._mode = "reader"
 
-        self._setup_viewer()
+        self._setup_central()
         self._setup_thumbnail_panel()
         self._setup_toc_panel()
         self._setup_search_panel()
@@ -80,14 +196,35 @@ class MainWindow(QMainWindow):
 
     # ── UI Setup ──────────────────────────────────────────────
 
-    def _setup_viewer(self):
+    def _setup_central(self):
+        self._stack = QStackedWidget()
+        self.setCentralWidget(self._stack)
+
+        # Welcome page (index 0)
+        self._welcome = WelcomeWidget()
+        self._welcome.open_requested.connect(self._open_file)
+        self._stack.addWidget(self._welcome)
+
+        # Tab widget (index 1)
         self._tab_widget = QTabWidget()
         self._tab_widget.setTabsClosable(True)
         self._tab_widget.setMovable(True)
         self._tab_widget.setDocumentMode(True)
-        self.setCentralWidget(self._tab_widget)
         self._tab_widget.currentChanged.connect(self._on_tab_changed)
         self._tab_widget.tabCloseRequested.connect(self._on_tab_close_requested)
+        self._stack.addWidget(self._tab_widget)
+
+        # Start on welcome
+        self._stack.setCurrentIndex(0)
+
+    def _update_central_view(self):
+        """Show welcome when no tabs, show tabs otherwise. Hide tab bar for single tab."""
+        count = self._tab_widget.count()
+        if count == 0:
+            self._stack.setCurrentIndex(0)
+        else:
+            self._stack.setCurrentIndex(1)
+            self._tab_widget.tabBar().setVisible(count > 1)
 
     def _setup_thumbnail_panel(self):
         self._thumb_panel = ThumbnailPanel()
@@ -144,100 +281,98 @@ class MainWindow(QMainWindow):
         tb = self.addToolBar("Main")
         tb.setMovable(False)
 
-        style = self.style()
-
+        # ── Group 1: File operations ──
         open_act = QAction("Open", self)
-        open_act.setToolTip("Open File")
+        open_act.setToolTip("Open File  (Ctrl+O)")
         open_act.setShortcut(QKeySequence.StandardKey.Open)
         open_act.triggered.connect(self._open_file)
         tb.addAction(open_act)
 
-        save_act = QAction("Save", self)
-        save_act.setToolTip("Save As")
-        save_act.setShortcut(QKeySequence("Ctrl+Shift+S"))
-        save_act.triggered.connect(self._save_file)
-        tb.addAction(save_act)
+        quick_save_act = QAction("Save", self)
+        quick_save_act.setToolTip("Save  (Ctrl+S)")
+        quick_save_act.setShortcut(QKeySequence.StandardKey.Save)
+        quick_save_act.triggered.connect(self._quick_save)
+        tb.addAction(quick_save_act)
 
-        batch_act = QAction("Batch", self)
-        batch_act.setToolTip("Batch Redact")
-        batch_act.triggered.connect(self._open_batch_dialog)
-        tb.addAction(batch_act)
+        save_as_act = QAction("Save As", self)
+        save_as_act.setToolTip("Save As  (Ctrl+Shift+S)")
+        save_as_act.setShortcut(QKeySequence("Ctrl+Shift+S"))
+        save_as_act.triggered.connect(self._save_file)
+        tb.addAction(save_as_act)
 
         tb.addSeparator()
 
+        # ── Group 2: Zoom controls ──
         zoom_out_act = QAction("\u2212", self)  # minus sign
-        zoom_out_act.setToolTip("Zoom Out")
+        zoom_out_act.setToolTip("Zoom Out  (Ctrl+-)")
         zoom_out_act.setShortcut(QKeySequence.StandardKey.ZoomOut)
         zoom_out_act.triggered.connect(self._zoom_out)
         tb.addAction(zoom_out_act)
 
-        self._zoom_input = QLineEdit("---")
-        self._zoom_input.setFixedWidth(56)
-        self._zoom_input.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._zoom_input.setStyleSheet(
-            "background: transparent; border: 1px solid transparent;"
-            "border-radius: 4px; color: #a0a8b8; font-size: 12px;"
-            "font-weight: bold; padding: 2px 4px;"
-        )
-        self._zoom_input.returnPressed.connect(self._on_zoom_input)
-        tb.addWidget(self._zoom_input)
+        self._zoom_combo = QComboBox()
+        self._zoom_combo.setEditable(True)
+        self._zoom_combo.setFixedWidth(100)
+        self._zoom_combo.setObjectName("zoom-combo")
+        for preset in ["50%", "75%", "100%", "125%", "150%", "200%", "Fit Width", "Fit Page"]:
+            self._zoom_combo.addItem(preset)
+        self._zoom_combo.setCurrentText("---")
+        self._zoom_combo.lineEdit().setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._zoom_combo.activated.connect(self._on_zoom_combo_activated)
+        self._zoom_combo.lineEdit().returnPressed.connect(self._on_zoom_input)
+        tb.addWidget(self._zoom_combo)
 
         zoom_in_act = QAction("+", self)
-        zoom_in_act.setToolTip("Zoom In")
+        zoom_in_act.setToolTip("Zoom In  (Ctrl++)")
         zoom_in_act.setShortcut(QKeySequence.StandardKey.ZoomIn)
         zoom_in_act.triggered.connect(self._zoom_in)
         tb.addAction(zoom_in_act)
 
-        fit_width_act = QAction("\u2194", self)  # left-right arrow
-        fit_width_act.setToolTip("Fit Width")
-        fit_width_act.triggered.connect(self._fit_width)
-        tb.addAction(fit_width_act)
-
-        fit_page_act = QAction("\u2922", self)  # NE arrow to corner
-        fit_page_act.setToolTip("Fit Page")
-        fit_page_act.triggered.connect(self._fit_page)
-        tb.addAction(fit_page_act)
-
         tb.addSeparator()
 
-        # Page navigation
-        prev_act = QAction(
-            style.standardIcon(QStyle.StandardPixmap.SP_ArrowBack), "", self
-        )
-        prev_act.setToolTip("Previous Page")
+        # ── Group 3: Page navigation ──
+        prev_act = QAction("\u2039", self)  # single left angle
+        prev_act.setToolTip("Previous Page  (Page Up)")
         prev_act.triggered.connect(self._prev_page)
         tb.addAction(prev_act)
 
         self._page_label = QLabel("0 / 0")
+        self._page_label.setObjectName("page-indicator")
         self._page_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._page_label.setFixedWidth(80)
-        self._page_label.setStyleSheet(
-            "background: #0f3460; color: #e0e0e0; font-size: 13px;"
-            "font-weight: bold; border-radius: 10px; padding: 4px 10px;"
-        )
         tb.addWidget(self._page_label)
 
-        next_act = QAction(
-            style.standardIcon(QStyle.StandardPixmap.SP_ArrowForward), "", self
-        )
-        next_act.setToolTip("Next Page")
+        next_act = QAction("\u203a", self)  # single right angle
+        next_act.setToolTip("Next Page  (Page Down)")
         next_act.triggered.connect(self._next_page)
         tb.addAction(next_act)
 
         tb.addSeparator()
 
-        # Mode toggle
-        self._mode_action = QAction("Redactor Mode", self)
-        self._mode_action.setToolTip("Toggle Reader / Redactor Mode")
-        self._mode_action.setCheckable(True)
-        self._mode_action.setShortcut(QKeySequence("Ctrl+M"))
-        self._mode_action.toggled.connect(self._toggle_mode)
-        self._mode_action.setChecked(True)  # must be after connect so _toggle_mode fires
-        tb.addAction(self._mode_action)
+        # ── Group 4: Mode switcher ──
+        self._mode_switcher = SegmentedControl([
+            ("reader", "Read"),
+            ("redactor", "Redact"),
+            ("editor", "Edit"),
+        ])
+        self._mode_switcher.mode_changed.connect(self._on_mode_changed)
+        self._mode_switcher.set_active("reader")
+        tb.addWidget(self._mode_switcher)
+
+        # ── Spacer ──
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        tb.addWidget(spacer)
+
+        # ── Batch (right-aligned, secondary) ──
+        batch_act = QAction("Batch", self)
+        batch_act.setToolTip("Batch Redact")
+        batch_act.triggered.connect(self._open_batch_dialog)
+        tb.addAction(batch_act)
 
     def _setup_statusbar(self):
         self._status_file = ""
         self._status_page = ""
+        self._status_mode = ""
         self.statusBar().showMessage("No file loaded")
 
     def _setup_shortcuts(self):
@@ -253,12 +388,22 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Home"), self, self._first_page)
         QShortcut(QKeySequence("End"), self, self._last_page)
 
+        # Mode shortcuts
+        QShortcut(QKeySequence("Ctrl+M"), self, lambda: self._switch_mode("redactor"))
+        QShortcut(QKeySequence("Ctrl+E"), self, lambda: self._switch_mode("editor"))
+
+    def _switch_mode(self, mode):
+        self._mode_switcher.set_active(mode)
+        self._on_mode_changed(mode)
+
     def _update_status(self):
         parts = []
         if self._status_file:
             parts.append(self._status_file)
         if self._status_page:
             parts.append(self._status_page)
+        if self._status_mode:
+            parts.append(self._status_mode)
         self.statusBar().showMessage("  |  ".join(parts) if parts else "No file loaded")
 
     # ── Tab Management ────────────────────────────────────────
@@ -270,6 +415,7 @@ class MainWindow(QMainWindow):
             try:
                 self._connected_viewer.page_changed.disconnect(self._on_page_changed)
                 self._connected_viewer.zoom_changed.disconnect(self._on_zoom_changed)
+                self._connected_viewer.text_edit_committed.disconnect(self._on_text_edit_committed)
             except RuntimeError:
                 pass
 
@@ -280,10 +426,11 @@ class MainWindow(QMainWindow):
             self._toc_panel.load_toc(None)
             self._search_panel.clear_results()
             self._page_label.setText("0 / 0")
-            self._zoom_input.setText("---")
+            self._zoom_combo.setCurrentText("---")
             self._status_file = ""
             self._status_page = ""
-            self.statusBar().showMessage("No file loaded")
+            self._update_status()
+            self._update_central_view()
             return
 
         viewer = state.viewer
@@ -291,6 +438,7 @@ class MainWindow(QMainWindow):
         # Connect signals from the new viewer
         viewer.page_changed.connect(self._on_page_changed)
         viewer.zoom_changed.connect(self._on_zoom_changed)
+        viewer.text_edit_committed.connect(self._on_text_edit_committed)
         self._connected_viewer = viewer
 
         # Update toolbar indicators
@@ -298,13 +446,13 @@ class MainWindow(QMainWindow):
             total = len(state.doc)
             current_page = viewer.current_page()
             self._page_label.setText(f"{current_page} / {total}")
-            self._zoom_input.setText(f"{int(viewer.zoom * 100)}%")
+            self._zoom_combo.setCurrentText(f"{int(viewer.zoom * 100)}%")
             self._status_file = f"File: {state.file_path.split('/')[-1]}"
             self._status_page = f"Page {current_page} / {total}"
             self._update_status()
         else:
             self._page_label.setText("0 / 0")
-            self._zoom_input.setText("---")
+            self._zoom_combo.setCurrentText("---")
 
         # Reload shared panels
         self._thumb_panel.load_document(state.doc)
@@ -312,11 +460,24 @@ class MainWindow(QMainWindow):
         if self._mode == "reader":
             self._toc_dock.setVisible(has_toc)
 
+        # Sync viewer mode with current app mode
+        if self._mode == "editor":
+            viewer.set_editor_mode_enabled(True)
+            viewer.set_text_selection_enabled(False)
+        elif self._mode == "reader":
+            viewer.set_editor_mode_enabled(False)
+            viewer.set_text_selection_enabled(True)
+        else:
+            viewer.set_editor_mode_enabled(False)
+            viewer.set_text_selection_enabled(False)
+
         # Restore search results for this tab
         if state.search_results:
             self._search_panel.set_results(state.search_results)
         else:
             self._search_panel.clear_results()
+
+        self._update_central_view()
 
     def _on_tab_close_requested(self, index):
         """Handle tab close button click."""
@@ -330,6 +491,7 @@ class MainWindow(QMainWindow):
             try:
                 state.viewer.page_changed.disconnect(self._on_page_changed)
                 state.viewer.zoom_changed.disconnect(self._on_zoom_changed)
+                state.viewer.text_edit_committed.disconnect(self._on_text_edit_committed)
             except RuntimeError:
                 pass
             self._connected_viewer = None
@@ -338,6 +500,7 @@ class MainWindow(QMainWindow):
             state.doc.close()
 
         self._tab_widget.removeTab(index)
+        self._update_central_view()
 
     # ── File Operations ───────────────────────────────────────
 
@@ -374,6 +537,7 @@ class MainWindow(QMainWindow):
 
         viewer = PdfViewer()
         viewer.set_text_selection_enabled(self._mode == "reader")
+        viewer.set_editor_mode_enabled(self._mode == "editor")
         viewer.load_document(doc)
 
         state = DocumentState(
@@ -387,6 +551,7 @@ class MainWindow(QMainWindow):
         filename = path.split("/")[-1]
         tab_index = self._tab_widget.addTab(viewer, filename)
         self._tab_widget.setCurrentIndex(tab_index)
+        self._update_central_view()
 
     @staticmethod
     def _image_to_pdf(image_path):
@@ -396,11 +561,38 @@ class MainWindow(QMainWindow):
         img_doc.close()
         return fitz.open("pdf", pdf_bytes)
 
+    def _quick_save(self):
+        """Save to the original file path. Falls back to Save As for image sources."""
+        state = self._current_state
+        if not state or not state.doc:
+            return
+        if not state.file_path or state.is_image_source:
+            self._save_file()
+            return
+        try:
+            state.doc.saveIncr()
+        except Exception:
+            # Incremental save fails on repaired files — do full save via temp file
+            try:
+                import os
+                import tempfile
+                fd, tmp = tempfile.mkstemp(suffix=".pdf", dir=os.path.dirname(state.file_path))
+                os.close(fd)
+                state.doc.save(tmp, garbage=4, deflate=True)
+                state.doc.close()
+                os.replace(tmp, state.file_path)
+                state.doc = fitz.open(state.file_path)
+                state.viewer.load_document(state.doc)
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Could not save PDF:\n{e}")
+                return
+        self.statusBar().showMessage(f"Saved to {state.file_path.split('/')[-1]}", 3000)
+
     def _save_file(self):
         if not self._doc:
             return
         path, _ = QFileDialog.getSaveFileName(
-            self, "Save Redacted PDF", "", "PDF Files (*.pdf)"
+            self, "Save PDF", "", "PDF Files (*.pdf)"
         )
         if not path:
             return
@@ -408,7 +600,7 @@ class MainWindow(QMainWindow):
             path += ".pdf"
         try:
             save(self._doc, path)
-            QMessageBox.information(self, "Saved", f"Redacted PDF saved to:\n{path}")
+            self.statusBar().showMessage(f"Saved to {path.split('/')[-1]}", 3000)
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Could not save PDF:\n{e}")
 
@@ -500,55 +692,100 @@ class MainWindow(QMainWindow):
 
     # ── Mode Toggle ───────────────────────────────────────────
 
-    def _toggle_mode(self, reader_mode):
-        if reader_mode:
-            self._mode = "reader"
-            self._mode_action.setText("Redactor Mode")
-            self.setWindowTitle("Obscura")
-            # Show reader panels
-            self._thumb_dock.setVisible(True)
-            self._thumb_dock.raise_()
-            if self._doc:
-                has_toc = self._toc_panel.load_toc(self._doc)
-                self._toc_dock.setVisible(has_toc)
-            # Hide redactor panels
-            self._search_dock.setVisible(False)
-            # Enable text selection
-            if self._viewer:
-                self._viewer.set_text_selection_enabled(True)
-        else:
-            self._mode = "redactor"
-            self._mode_action.setText("Reader Mode")
-            self.setWindowTitle("Obscura — Redactor")
-            # Hide reader panels
-            self._thumb_dock.setVisible(False)
-            self._toc_dock.setVisible(False)
-            # Show redactor panels
-            self._search_dock.setVisible(True)
-            self._search_dock.raise_()
-            # Disable text selection
-            if self._viewer:
-                self._viewer.set_text_selection_enabled(False)
-                self._viewer.clear_selection()
+    def _on_mode_changed(self, mode):
+        if mode == "reader":
+            self._activate_reader_mode()
+        elif mode == "redactor":
+            self._activate_redactor_mode()
+        elif mode == "editor":
+            self._activate_editor_mode()
+
+    def _activate_reader_mode(self):
+        self._mode = "reader"
+        self.setWindowTitle("Obscura")
+        self._status_mode = "Read"
+        # Show reader panels
+        self._thumb_dock.setVisible(True)
+        self._thumb_dock.raise_()
+        if self._doc:
+            has_toc = self._toc_panel.load_toc(self._doc)
+            self._toc_dock.setVisible(has_toc)
+        # Hide other panels
+        self._search_dock.setVisible(False)
+        # Enable text selection, disable editor
+        if self._viewer:
+            self._viewer.set_text_selection_enabled(True)
+            self._viewer.set_editor_mode_enabled(False)
+        self._update_status()
+
+    def _activate_redactor_mode(self):
+        self._mode = "redactor"
+        self.setWindowTitle("Obscura — Redact")
+        self._status_mode = "Redact"
+        # Hide reader panels
+        self._thumb_dock.setVisible(False)
+        self._toc_dock.setVisible(False)
+        # Show redactor panels
+        self._search_dock.setVisible(True)
+        self._search_dock.raise_()
+        # Disable text selection and editor
+        if self._viewer:
+            self._viewer.set_text_selection_enabled(False)
+            self._viewer.clear_selection()
+            self._viewer.set_editor_mode_enabled(False)
+        self._update_status()
+
+    def _activate_editor_mode(self):
+        self._mode = "editor"
+        self.setWindowTitle("Obscura — Edit")
+        self._status_mode = "Edit"
+        # Hide all side panels
+        self._thumb_dock.setVisible(False)
+        self._toc_dock.setVisible(False)
+        self._search_dock.setVisible(False)
+        # Disable text selection, enable editor
+        if self._viewer:
+            self._viewer.set_text_selection_enabled(False)
+            self._viewer.clear_selection()
+            self._viewer.set_editor_mode_enabled(True)
+        self._update_status()
 
     # ── Zoom ──────────────────────────────────────────────────
 
     def _on_zoom_changed(self, zoom):
-        self._zoom_input.setText(f"{int(zoom * 100)}%")
+        self._zoom_combo.setCurrentText(f"{int(zoom * 100)}%")
+
+    def _on_zoom_combo_activated(self, index):
+        """Handle selecting a zoom preset from the dropdown."""
+        text = self._zoom_combo.currentText().strip()
+        if text == "Fit Width":
+            self._fit_width()
+        elif text == "Fit Page":
+            self._fit_page()
+        else:
+            self._apply_zoom_text(text)
 
     def _on_zoom_input(self):
         """Handle user typing a zoom percentage and pressing Enter."""
-        text = self._zoom_input.text().strip().rstrip("%").strip()
+        text = self._zoom_combo.currentText().strip()
+        if text == "Fit Width":
+            self._fit_width()
+        elif text == "Fit Page":
+            self._fit_page()
+        else:
+            self._apply_zoom_text(text)
+        self._zoom_combo.lineEdit().clearFocus()
+
+    def _apply_zoom_text(self, text):
+        text = text.rstrip("%").strip()
         try:
             pct = float(text)
         except ValueError:
-            # Restore current value
             if self._viewer:
-                self._zoom_input.setText(f"{int(self._viewer.zoom * 100)}%")
+                self._zoom_combo.setCurrentText(f"{int(self._viewer.zoom * 100)}%")
             return
         if self._viewer:
             self._viewer.set_zoom(pct / 100.0)
-        self._zoom_input.clearFocus()
 
     # ── Search ────────────────────────────────────────────────
 
@@ -681,3 +918,29 @@ class MainWindow(QMainWindow):
                     if annot.type[0] == fitz.PDF_ANNOT_REDACT:
                         page.delete_annot(annot)
                     annot = next_annot
+
+    # ── Text Editing ─────────────────────────────────────────
+
+    def _on_text_edit_committed(self, page_index, span, new_text):
+        """Handle an in-place edit commit from the viewer."""
+        state = self._current_state
+        if not state or not state.doc:
+            return
+
+        page = state.doc[page_index]
+
+        replace_text(
+            page,
+            span["bbox"],
+            span["text"],
+            new_text,
+            span["font"],
+            span["size"],
+            span["color"],
+            origin=span["origin"],
+        )
+
+        # Refresh viewer and thumbnails
+        state.viewer.refresh()
+        self._thumb_panel.load_document(state.doc)
+        self.statusBar().showMessage("Text edited", 3000)

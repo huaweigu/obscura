@@ -1,5 +1,4 @@
 import sys
-import os
 
 import fitz
 import pytest
@@ -38,7 +37,7 @@ def sample_pdf(tmp_path):
 @pytest.fixture()
 def sample_image(tmp_path, qapp):
     """Create a JPEG image with known text content for OCR testing."""
-    from PySide6.QtGui import QImage, QPainter, QFont, QColor
+    from PySide6.QtGui import QColor, QFont, QImage, QPainter
 
     path = tmp_path / "sample.jpg"
     img = QImage(600, 300, QImage.Format.Format_RGB888)

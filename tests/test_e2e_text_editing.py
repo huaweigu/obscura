@@ -1,6 +1,7 @@
 """E2E tests for the text editing workflow."""
 
 import fitz
+
 from app.text_editor import get_span_at_point
 
 
