@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 import fitz
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QSettings, Qt, Signal
 from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QComboBox,
@@ -31,6 +31,10 @@ from app.thumbnail_panel import ThumbnailPanel
 from app.toc_panel import TocPanel
 
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif")
+
+PANEL_DEFAULT_WIDTH = 260
+SETTINGS_ORG = "Obscura"
+SETTINGS_APP = "Obscura"
 
 
 # ── Segmented Control Widget ────────────────────────────────
@@ -167,6 +171,14 @@ class MainWindow(QMainWindow):
         self._connected_viewer: PdfViewer | None = None
         self._mode = "reader"
 
+        # Left dock group state. The panel is a single unit the user opens and
+        # closes explicitly; modes only decide which dock inside it is raised.
+        self._settings = QSettings(SETTINGS_ORG, SETTINGS_APP)
+        self._panel_act: QAction | None = None
+        self._panel_width = PANEL_DEFAULT_WIDTH
+        self._raised_dock: QDockWidget | None = None
+        self._has_toc = False
+
         self._setup_central()
         self._setup_thumbnail_panel()
         self._setup_toc_panel()
@@ -174,6 +186,7 @@ class MainWindow(QMainWindow):
         self._setup_toolbar()
         self._setup_statusbar()
         self._setup_shortcuts()
+        self._restore_panel_settings()
 
     # ── Properties (delegate to active tab) ───────────────────
 
@@ -259,27 +272,114 @@ class MainWindow(QMainWindow):
             | QDockWidget.DockWidgetFeature.DockWidgetFloatable
         )
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self._search_dock)
+        self._search_dock.setVisible(False)
 
         # Tab the left docks together
         self.tabifyDockWidget(self._thumb_dock, self._toc_dock)
         self.tabifyDockWidget(self._toc_dock, self._search_dock)
-        self._search_dock.raise_()  # default visible tab
-
-        # Set a comfortable default width for the left dock area
-        self.resizeDocks(
-            [self._thumb_dock, self._toc_dock, self._search_dock],
-            [260, 260, 260],
-            Qt.Orientation.Horizontal,
-        )
 
         self._search_panel.search_requested.connect(self._do_search)
         self._search_panel.result_clicked.connect(self._on_result_clicked)
         self._search_panel.redact_all_requested.connect(self._redact_all)
         self._search_panel.redact_selected_requested.connect(self._redact_selected)
 
+    # ── Left Panel (tabified dock group) ──────────────────────
+
+    def _panel_docks(self):
+        return (self._thumb_dock, self._toc_dock, self._search_dock)
+
+    def _is_panel_open(self):
+        """True if any left dock is showing.
+
+        Uses isHidden() rather than isVisible() so the answer is meaningful
+        before the window is shown on screen.
+        """
+        return any(not dock.isHidden() for dock in self._panel_docks())
+
+    def _dock_for_mode(self):
+        """The dock a given mode wants raised when the panel is open."""
+        if self._mode == "redactor":
+            return self._search_dock
+        return self._thumb_dock
+
+    def _raise_dock(self, dock):
+        """Make `dock` the current tab of the panel, if it can be shown."""
+        if dock is self._toc_dock and not self._has_toc:
+            dock = self._thumb_dock
+        self._raised_dock = dock
+        if not dock.isHidden():
+            dock.raise_()
+
+    def _capture_panel_width(self):
+        """Remember the panel's current width so re-opening restores it."""
+        if not self._is_panel_open():
+            return
+        width = self._search_dock.width()
+        if width > 0:
+            self._panel_width = width
+
+    def _set_panel_open(self, open_, raise_dock=None, remember=True):
+        """Show or hide the whole left dock group as one unit."""
+        self._capture_panel_width()
+
+        if open_:
+            self._thumb_dock.setVisible(True)
+            self._toc_dock.setVisible(self._has_toc)
+            self._search_dock.setVisible(True)
+            self._raise_dock(raise_dock or self._dock_for_mode())
+            self.resizeDocks(
+                list(self._panel_docks()),
+                [self._panel_width] * 3,
+                Qt.Orientation.Horizontal,
+            )
+        else:
+            for dock in self._panel_docks():
+                dock.setVisible(False)
+
+        if self._panel_act is not None:
+            self._panel_act.setChecked(open_)
+        if remember:
+            self._save_panel_settings()
+
+    def _toggle_panel(self):
+        self._set_panel_open(not self._is_panel_open())
+
+    def _focus_search(self):
+        """Ctrl+F: open the panel on the Search tab and focus its input."""
+        self._set_panel_open(True, raise_dock=self._search_dock)
+        self._search_panel.focus_input()
+
+    def _restore_panel_settings(self):
+        self._panel_width = int(
+            self._settings.value("panel/width", PANEL_DEFAULT_WIDTH)
+        )
+        if self._panel_width <= 0:
+            self._panel_width = PANEL_DEFAULT_WIDTH
+        open_ = self._settings.value("panel/open", False, type=bool)
+        self._set_panel_open(open_, remember=False)
+
+    def _save_panel_settings(self):
+        self._settings.setValue("panel/open", self._is_panel_open())
+        self._settings.setValue("panel/width", self._panel_width)
+
+    def closeEvent(self, event):
+        self._capture_panel_width()
+        self._save_panel_settings()
+        super().closeEvent(event)
+
     def _setup_toolbar(self):
         tb = self.addToolBar("Main")
         tb.setMovable(False)
+
+        # ── Group 0: Panel toggle ──
+        self._panel_act = QAction("▣", self)  # white square containing square
+        self._panel_act.setCheckable(True)
+        self._panel_act.setToolTip("Toggle Panel  (Ctrl+\\)")
+        # triggered() carries the action's new checked state.
+        self._panel_act.triggered.connect(lambda checked: self._set_panel_open(checked))
+        tb.addAction(self._panel_act)
+
+        tb.addSeparator()
 
         # ── Group 1: File operations ──
         open_act = QAction("Open", self)
@@ -361,6 +461,8 @@ class MainWindow(QMainWindow):
         # ── Spacer ──
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        # Without this the global QWidget rule paints it as a stray dark box.
+        spacer.setStyleSheet("background: transparent;")
         tb.addWidget(spacer)
 
         # ── Batch (right-aligned, secondary) ──
@@ -391,6 +493,10 @@ class MainWindow(QMainWindow):
         # Mode shortcuts
         QShortcut(QKeySequence("Ctrl+M"), self, lambda: self._switch_mode("redactor"))
         QShortcut(QKeySequence("Ctrl+E"), self, lambda: self._switch_mode("editor"))
+
+        # Panel shortcuts
+        QShortcut(QKeySequence("Ctrl+\\"), self, self._toggle_panel)
+        QShortcut(QKeySequence.StandardKey.Find, self, self._focus_search)
 
     def _switch_mode(self, mode):
         self._mode_switcher.set_active(mode)
@@ -424,6 +530,9 @@ class MainWindow(QMainWindow):
             self._connected_viewer = None
             self._thumb_panel.load_document(None)
             self._toc_panel.load_toc(None)
+            self._has_toc = False
+            if self._is_panel_open():
+                self._toc_dock.setVisible(False)
             self._search_panel.clear_results()
             self._page_label.setText("0 / 0")
             self._zoom_combo.setCurrentText("---")
@@ -456,9 +565,12 @@ class MainWindow(QMainWindow):
 
         # Reload shared panels
         self._thumb_panel.load_document(state.doc)
-        has_toc = self._toc_panel.load_toc(state.doc)
-        if self._mode == "reader":
-            self._toc_dock.setVisible(has_toc)
+        self._has_toc = self._toc_panel.load_toc(state.doc)
+        # Bookmarks only exists as a tab for documents that have an outline.
+        if self._is_panel_open():
+            self._toc_dock.setVisible(self._has_toc)
+            if self._raised_dock is self._toc_dock and not self._has_toc:
+                self._raise_dock(self._thumb_dock)
 
         # Sync viewer mode with current app mode
         if self._mode == "editor":
@@ -700,18 +812,15 @@ class MainWindow(QMainWindow):
         elif mode == "editor":
             self._activate_editor_mode()
 
+    # Modes set interaction state and pick which dock is raised. They do NOT
+    # open or close the panel — that stays under the user's control via the
+    # toolbar toggle / Ctrl+\ — with one exception, noted in Redact below.
+
     def _activate_reader_mode(self):
         self._mode = "reader"
         self.setWindowTitle("Obscura")
         self._status_mode = "Read"
-        # Show reader panels
-        self._thumb_dock.setVisible(True)
-        self._thumb_dock.raise_()
-        if self._doc:
-            has_toc = self._toc_panel.load_toc(self._doc)
-            self._toc_dock.setVisible(has_toc)
-        # Hide other panels
-        self._search_dock.setVisible(False)
+        self._raise_dock(self._thumb_dock)
         # Enable text selection, disable editor
         if self._viewer:
             self._viewer.set_text_selection_enabled(True)
@@ -722,12 +831,10 @@ class MainWindow(QMainWindow):
         self._mode = "redactor"
         self.setWindowTitle("Obscura — Redact")
         self._status_mode = "Redact"
-        # Hide reader panels
-        self._thumb_dock.setVisible(False)
-        self._toc_dock.setVisible(False)
-        # Show redactor panels
-        self._search_dock.setVisible(True)
-        self._search_dock.raise_()
+        # Redact is the one mode that force-opens the panel: the search input
+        # is its only entry point, so the mode is unusable without it. The
+        # user can collapse it again and that choice is what persists.
+        self._set_panel_open(True, raise_dock=self._search_dock)
         # Disable text selection and editor
         if self._viewer:
             self._viewer.set_text_selection_enabled(False)
@@ -739,10 +846,7 @@ class MainWindow(QMainWindow):
         self._mode = "editor"
         self.setWindowTitle("Obscura — Edit")
         self._status_mode = "Edit"
-        # Hide all side panels
-        self._thumb_dock.setVisible(False)
-        self._toc_dock.setVisible(False)
-        self._search_dock.setVisible(False)
+        self._raise_dock(self._thumb_dock)
         # Disable text selection, enable editor
         if self._viewer:
             self._viewer.set_text_selection_enabled(False)

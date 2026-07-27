@@ -96,6 +96,11 @@ class SearchPanel(QWidget):
         self._redact_all_btn.setEnabled(count > 0)
         self._redact_selected_btn.setEnabled(count > 0)
 
+    def focus_input(self):
+        """Put the keyboard cursor in the search box and select what's there."""
+        self._search_input.setFocus()
+        self._search_input.selectAll()
+
     def clear_results(self):
         self._results.clear()
         self._results_list.clear()

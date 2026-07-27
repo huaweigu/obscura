@@ -97,43 +97,163 @@ class TestTabClose:
 
 
 class TestModeSwitch:
-    def test_reader_mode_docks(self, main_window_with_pdf):
+    """Mode switching sets interaction state and raises the relevant dock.
+
+    Panel *visibility* is the user's business (see TestPanelToggle); the only
+    exception is Redact, which has no other entry point for a keyword.
+    """
+
+    def test_reader_mode_raises_pages_without_opening_panel(self, main_window_with_pdf):
         win = main_window_with_pdf
         win._activate_reader_mode()
-        # Use isHidden() to check the widget's own flag (isVisible requires
-        # the window to be shown on screen, which we avoid in headless tests).
-        assert not win._thumb_dock.isHidden()
-        assert win._search_dock.isHidden()
         assert win._mode == "reader"
+        assert win._raised_dock is win._thumb_dock
+        # Panel starts collapsed and Read mode must not change that.
+        assert win._is_panel_open() is False
 
     def test_reader_mode_title(self, main_window_with_pdf):
         win = main_window_with_pdf
         win._activate_reader_mode()
         assert win.windowTitle() == "Obscura"
 
-    def test_redactor_mode_docks(self, main_window_with_pdf):
+    def test_reader_mode_keeps_open_panel_open(self, main_window_with_pdf):
         win = main_window_with_pdf
+        win._set_panel_open(True)
+        win._activate_reader_mode()
+        assert win._is_panel_open() is True
+        assert win._raised_dock is win._thumb_dock
+
+    def test_redactor_mode_opens_panel_and_raises_search(self, main_window_with_pdf):
+        win = main_window_with_pdf
+        assert win._is_panel_open() is False
         win._activate_redactor_mode()
-        assert win._thumb_dock.isHidden()
-        assert win._toc_dock.isHidden()
-        assert not win._search_dock.isHidden()
         assert win._mode == "redactor"
+        assert win._is_panel_open() is True
+        assert win._raised_dock is win._search_dock
+        assert not win._search_dock.isHidden()
         assert win.windowTitle() == "Obscura \u2014 Redact"
 
-    def test_editor_mode_hides_all_docks(self, main_window_with_pdf):
+    def test_editor_mode_does_not_open_panel(self, main_window_with_pdf):
         win = main_window_with_pdf
         win._activate_editor_mode()
-        assert win._thumb_dock.isHidden()
-        assert win._toc_dock.isHidden()
-        assert win._search_dock.isHidden()
         assert win._mode == "editor"
+        assert win._is_panel_open() is False
         assert win.windowTitle() == "Obscura \u2014 Edit"
+
+    def test_editor_mode_keeps_open_panel_open(self, main_window_with_pdf):
+        win = main_window_with_pdf
+        win._set_panel_open(True)
+        win._activate_editor_mode()
+        assert win._is_panel_open() is True
 
     def test_editor_mode_enables_editor_on_viewer(self, main_window_with_pdf):
         win = main_window_with_pdf
         win._activate_editor_mode()
         assert win._viewer._editor_mode_enabled is True
         assert win._viewer._text_selection_enabled is False
+
+
+# \u2500\u2500 TestPanelToggle \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+
+
+class TestPanelToggle:
+    """The left dock group is collapsed by default and toggled explicitly."""
+
+    def test_panel_collapsed_by_default(self, main_window):
+        win = main_window
+        assert win._is_panel_open() is False
+        assert win._thumb_dock.isHidden()
+        assert win._toc_dock.isHidden()
+        assert win._search_dock.isHidden()
+
+    def test_toggle_action_unchecked_by_default(self, main_window):
+        assert main_window._panel_act.isChecked() is False
+
+    def test_opening_a_pdf_does_not_open_panel(self, main_window, sample_pdf):
+        main_window._open_file_by_path(sample_pdf)
+        assert main_window._is_panel_open() is False
+
+    def test_toggle_opens_then_closes(self, main_window_with_pdf):
+        win = main_window_with_pdf
+        win._toggle_panel()
+        assert win._is_panel_open() is True
+        assert win._panel_act.isChecked() is True
+        win._toggle_panel()
+        assert win._is_panel_open() is False
+        assert win._panel_act.isChecked() is False
+
+    def test_open_panel_shows_pages_and_search_tabs(self, main_window_with_pdf):
+        win = main_window_with_pdf
+        win._set_panel_open(True)
+        assert not win._thumb_dock.isHidden()
+        assert not win._search_dock.isHidden()
+
+    def test_bookmarks_dock_hidden_without_toc(self, main_window_with_pdf):
+        win = main_window_with_pdf
+        win._set_panel_open(True)
+        assert win._has_toc is False
+        assert win._toc_dock.isHidden()
+
+    def test_bookmarks_dock_shown_with_toc(self, main_window, sample_pdf_with_toc):
+        main_window._open_file_by_path(sample_pdf_with_toc)
+        main_window._set_panel_open(True)
+        assert main_window._has_toc is True
+        assert not main_window._toc_dock.isHidden()
+
+    def test_focus_search_opens_panel_and_raises_search(self, main_window_with_pdf):
+        win = main_window_with_pdf
+        win._focus_search()
+        assert win._is_panel_open() is True
+        assert win._raised_dock is win._search_dock
+
+    def test_redact_then_manual_collapse_stays_collapsed(self, main_window_with_pdf):
+        win = main_window_with_pdf
+        win._activate_redactor_mode()
+        assert win._is_panel_open() is True
+        win._toggle_panel()
+        assert win._is_panel_open() is False
+        # Re-entering the mode we are already in must not re-open it.
+        win._activate_reader_mode()
+        assert win._is_panel_open() is False
+
+    def test_panel_open_state_persists_across_windows(self, main_window):
+        from app.main_window import MainWindow
+
+        main_window._set_panel_open(True)
+        main_window.close()  # closeEvent flushes settings
+
+        fresh = MainWindow()
+        try:
+            assert fresh._is_panel_open() is True
+            assert fresh._panel_act.isChecked() is True
+        finally:
+            fresh.close()
+
+    def test_panel_closed_state_persists_across_windows(self, main_window):
+        from app.main_window import MainWindow
+
+        main_window._set_panel_open(True)
+        main_window._set_panel_open(False)
+        main_window.close()
+
+        fresh = MainWindow()
+        try:
+            assert fresh._is_panel_open() is False
+        finally:
+            fresh.close()
+
+    def test_panel_width_persists_across_windows(self, main_window):
+        from app.main_window import MainWindow
+
+        main_window._set_panel_open(True)
+        main_window._panel_width = 340
+        main_window._save_panel_settings()
+
+        fresh = MainWindow()
+        try:
+            assert fresh._panel_width == 340
+        finally:
+            fresh.close()
 
 
 # ── TestNavigation ──────────────────────────────────────────
