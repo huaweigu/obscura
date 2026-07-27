@@ -35,22 +35,35 @@ class TestMultiTabWorkflow:
 class TestModeWithPanels:
     # Note: isVisible() returns False when the parent QMainWindow is not shown.
     # Use "not isHidden()" to check the widget's own visibility flag instead.
+    #
+    # Modes no longer own panel visibility — they only raise the relevant dock.
+    # Redact is the exception: it force-opens the panel because there is no
+    # other way to enter a search keyword.
 
-    def test_reader_shows_thumbnails(self, main_window_with_pdf):
-        main_window_with_pdf._switch_mode("reader")
-        assert not main_window_with_pdf._thumb_dock.isHidden()
-        assert main_window_with_pdf._search_dock.isHidden()
+    def test_reader_raises_pages_and_leaves_panel_alone(self, main_window_with_pdf):
+        win = main_window_with_pdf
+        win._switch_mode("reader")
+        assert win._raised_dock is win._thumb_dock
+        assert win._is_panel_open() is False
+
+    def test_reader_with_open_panel_shows_thumbnails(self, main_window_with_pdf):
+        win = main_window_with_pdf
+        win._toggle_panel()
+        win._switch_mode("reader")
+        assert not win._thumb_dock.isHidden()
 
     def test_redactor_shows_search(self, main_window_with_pdf):
-        main_window_with_pdf._switch_mode("redactor")
-        assert not main_window_with_pdf._search_dock.isHidden()
-        assert main_window_with_pdf._thumb_dock.isHidden()
+        win = main_window_with_pdf
+        win._switch_mode("redactor")
+        assert not win._search_dock.isHidden()
+        assert win._raised_dock is win._search_dock
 
-    def test_editor_hides_all(self, main_window_with_pdf):
-        main_window_with_pdf._switch_mode("editor")
-        assert main_window_with_pdf._thumb_dock.isHidden()
-        assert main_window_with_pdf._toc_dock.isHidden()
-        assert main_window_with_pdf._search_dock.isHidden()
+    def test_editor_does_not_force_panel_open(self, main_window_with_pdf):
+        win = main_window_with_pdf
+        win._switch_mode("editor")
+        assert win._thumb_dock.isHidden()
+        assert win._toc_dock.isHidden()
+        assert win._search_dock.isHidden()
 
     def test_page_label_updates(self, main_window_with_pdf):
         # The initial page label should show page info for the 3-page PDF

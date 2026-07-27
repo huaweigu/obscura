@@ -113,20 +113,22 @@ class PreviewDialog(QDialog):
 
         self._populate_preview()
 
+    @staticmethod
+    def _page_has_redactions(page):
+        annot = page.first_annot
+        while annot:
+            if annot.type[0] == fitz.PDF_ANNOT_REDACT:
+                return True
+            annot = annot.next
+        return False
+
     def _populate_preview(self):
         """Render before/after for each page that has redaction annotations."""
         zoom = 1.0
-        pages_with_redactions = []
-        for i in range(len(self._doc)):
-            page = self._doc[i]
-            annot = page.first_annot
-            while annot:
-                if annot.type[0] == fitz.PDF_ANNOT_REDACT:
-                    pages_with_redactions.append(i)
-                    break
-                annot = annot.next
-            else:
-                continue
+        pages_with_redactions = [
+            i for i in range(len(self._doc))
+            if self._page_has_redactions(self._doc[i])
+        ]
 
         if not pages_with_redactions:
             lbl = QLabel("No redaction annotations found.")

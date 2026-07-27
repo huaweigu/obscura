@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import os
+import tempfile
 from dataclasses import dataclass, field
 
 import fitz
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QSettings, Qt, Signal
 from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QComboBox,
@@ -31,6 +33,10 @@ from app.thumbnail_panel import ThumbnailPanel
 from app.toc_panel import TocPanel
 
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif")
+
+PANEL_DEFAULT_WIDTH = 260
+SETTINGS_ORG = "Obscura"
+SETTINGS_APP = "Obscura"
 
 
 # ── Segmented Control Widget ────────────────────────────────
@@ -152,6 +158,18 @@ class DocumentState:
     search_results: list = field(default_factory=list)
     ocr_textpages: dict = field(default_factory=dict)
     is_image_source: bool = False
+    # Set when the in-memory document diverges from the file on disk, i.e.
+    # after redactions are applied or text is edited.
+    is_dirty: bool = False
+
+    @property
+    def base_name(self) -> str:
+        return self.file_path.split("/")[-1] if self.file_path else "Untitled"
+
+    @property
+    def display_name(self) -> str:
+        """Tab title — bulleted while there are unsaved changes."""
+        return f"{self.base_name} •" if self.is_dirty else self.base_name
 
 
 # ── Main Window ─────────────────────────────────────────────
@@ -167,6 +185,14 @@ class MainWindow(QMainWindow):
         self._connected_viewer: PdfViewer | None = None
         self._mode = "reader"
 
+        # Left dock group state. The panel is a single unit the user opens and
+        # closes explicitly; modes only decide which dock inside it is raised.
+        self._settings = QSettings(SETTINGS_ORG, SETTINGS_APP)
+        self._panel_act: QAction | None = None
+        self._panel_width = PANEL_DEFAULT_WIDTH
+        self._raised_dock: QDockWidget | None = None
+        self._has_toc = False
+
         self._setup_central()
         self._setup_thumbnail_panel()
         self._setup_toc_panel()
@@ -174,6 +200,7 @@ class MainWindow(QMainWindow):
         self._setup_toolbar()
         self._setup_statusbar()
         self._setup_shortcuts()
+        self._restore_panel_settings()
 
     # ── Properties (delegate to active tab) ───────────────────
 
@@ -259,27 +286,131 @@ class MainWindow(QMainWindow):
             | QDockWidget.DockWidgetFeature.DockWidgetFloatable
         )
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self._search_dock)
+        self._search_dock.setVisible(False)
 
         # Tab the left docks together
         self.tabifyDockWidget(self._thumb_dock, self._toc_dock)
         self.tabifyDockWidget(self._toc_dock, self._search_dock)
-        self._search_dock.raise_()  # default visible tab
-
-        # Set a comfortable default width for the left dock area
-        self.resizeDocks(
-            [self._thumb_dock, self._toc_dock, self._search_dock],
-            [260, 260, 260],
-            Qt.Orientation.Horizontal,
-        )
 
         self._search_panel.search_requested.connect(self._do_search)
         self._search_panel.result_clicked.connect(self._on_result_clicked)
         self._search_panel.redact_all_requested.connect(self._redact_all)
         self._search_panel.redact_selected_requested.connect(self._redact_selected)
 
+    # ── Left Panel (tabified dock group) ──────────────────────
+
+    def _panel_docks(self):
+        return (self._thumb_dock, self._toc_dock, self._search_dock)
+
+    def _is_panel_open(self):
+        """True if any left dock is showing.
+
+        Uses isHidden() rather than isVisible() so the answer is meaningful
+        before the window is shown on screen.
+        """
+        return any(not dock.isHidden() for dock in self._panel_docks())
+
+    def _dock_for_mode(self):
+        """The dock a given mode wants raised when the panel is open."""
+        if self._mode == "redactor":
+            return self._search_dock
+        return self._thumb_dock
+
+    def _raise_dock(self, dock):
+        """Make `dock` the current tab of the panel, if it can be shown."""
+        if dock is self._toc_dock and not self._has_toc:
+            dock = self._thumb_dock
+        self._raised_dock = dock
+        if not dock.isHidden():
+            dock.raise_()
+
+    def _capture_panel_width(self):
+        """Remember the panel's current width so re-opening restores it."""
+        if not self._is_panel_open():
+            return
+        width = self._search_dock.width()
+        if width > 0:
+            self._panel_width = width
+
+    def _set_panel_open(self, open_, raise_dock=None, remember=True):
+        """Show or hide the whole left dock group as one unit."""
+        self._capture_panel_width()
+
+        if open_:
+            self._thumb_dock.setVisible(True)
+            self._toc_dock.setVisible(self._has_toc)
+            self._search_dock.setVisible(True)
+            self._raise_dock(raise_dock or self._dock_for_mode())
+            self.resizeDocks(
+                list(self._panel_docks()),
+                [self._panel_width] * 3,
+                Qt.Orientation.Horizontal,
+            )
+        else:
+            for dock in self._panel_docks():
+                dock.setVisible(False)
+
+        if self._panel_act is not None:
+            self._panel_act.setChecked(open_)
+        if remember:
+            self._save_panel_settings()
+
+    def _toggle_panel(self):
+        self._set_panel_open(not self._is_panel_open())
+
+    def _focus_search(self):
+        """Ctrl+F: open the panel on the Search tab and focus its input."""
+        self._set_panel_open(True, raise_dock=self._search_dock)
+        self._search_panel.focus_input()
+
+    def _restore_panel_settings(self):
+        """Load the stored panel preference.
+
+        Settings live in a user-editable file, so every value here is treated
+        as untrusted: a hand-mangled width must not stop the app launching.
+        """
+        try:
+            width = int(self._settings.value("panel/width", PANEL_DEFAULT_WIDTH))
+        except (TypeError, ValueError):
+            width = PANEL_DEFAULT_WIDTH
+        self._panel_width = width if width > 0 else PANEL_DEFAULT_WIDTH
+
+        try:
+            open_ = bool(self._settings.value("panel/open", False, type=bool))
+        except (TypeError, ValueError):
+            open_ = False
+
+        self._set_panel_open(open_, remember=False)
+
+    def _save_panel_settings(self):
+        self._settings.setValue("panel/open", self._is_panel_open())
+        self._settings.setValue("panel/width", self._panel_width)
+
+    def closeEvent(self, event):
+        # Ask about every document with unsaved work before quitting.
+        for state in list(self._tab_states):
+            if not self._confirm_discard(state):
+                event.ignore()
+                return
+
+        self._capture_panel_width()
+        self._save_panel_settings()
+        event.accept()
+        super().closeEvent(event)
+
     def _setup_toolbar(self):
         tb = self.addToolBar("Main")
         tb.setMovable(False)
+
+        # ── Group 0: Panel toggle ──
+        self._panel_act = QAction("▣", self)  # white square containing square
+        self._panel_act.setCheckable(True)
+        self._panel_act.setToolTip("Toggle Panel  (Ctrl+\\)")
+        # triggered() carries the action's new checked state.
+        self._panel_act.triggered.connect(lambda checked: self._set_panel_open(checked))
+        tb.addAction(self._panel_act)
+
+        tb.addSeparator()
 
         # ── Group 1: File operations ──
         open_act = QAction("Open", self)
@@ -361,6 +492,8 @@ class MainWindow(QMainWindow):
         # ── Spacer ──
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        # Without this the global QWidget rule paints it as a stray dark box.
+        spacer.setStyleSheet("background: transparent;")
         tb.addWidget(spacer)
 
         # ── Batch (right-aligned, secondary) ──
@@ -391,6 +524,10 @@ class MainWindow(QMainWindow):
         # Mode shortcuts
         QShortcut(QKeySequence("Ctrl+M"), self, lambda: self._switch_mode("redactor"))
         QShortcut(QKeySequence("Ctrl+E"), self, lambda: self._switch_mode("editor"))
+
+        # Panel shortcuts
+        QShortcut(QKeySequence("Ctrl+\\"), self, self._toggle_panel)
+        QShortcut(QKeySequence.StandardKey.Find, self, self._focus_search)
 
     def _switch_mode(self, mode):
         self._mode_switcher.set_active(mode)
@@ -424,6 +561,9 @@ class MainWindow(QMainWindow):
             self._connected_viewer = None
             self._thumb_panel.load_document(None)
             self._toc_panel.load_toc(None)
+            self._has_toc = False
+            if self._is_panel_open():
+                self._toc_dock.setVisible(False)
             self._search_panel.clear_results()
             self._page_label.setText("0 / 0")
             self._zoom_combo.setCurrentText("---")
@@ -456,9 +596,12 @@ class MainWindow(QMainWindow):
 
         # Reload shared panels
         self._thumb_panel.load_document(state.doc)
-        has_toc = self._toc_panel.load_toc(state.doc)
-        if self._mode == "reader":
-            self._toc_dock.setVisible(has_toc)
+        self._has_toc = self._toc_panel.load_toc(state.doc)
+        # Bookmarks only exists as a tab for documents that have an outline.
+        if self._is_panel_open():
+            self._toc_dock.setVisible(self._has_toc)
+            if self._raised_dock is self._toc_dock and not self._has_toc:
+                self._raise_dock(self._thumb_dock)
 
         # Sync viewer mode with current app mode
         if self._mode == "editor":
@@ -479,9 +622,59 @@ class MainWindow(QMainWindow):
 
         self._update_central_view()
 
+    def _tab_index_of(self, state):
+        """Index of `state` by identity, or -1.
+
+        DocumentState is a dataclass, so list.index() would match on field
+        equality and could resolve to a different tab.
+        """
+        for index, candidate in enumerate(self._tab_states):
+            if candidate is state:
+                return index
+        return -1
+
+    def _mark_dirty(self, state, dirty=True):
+        """Flag unsaved changes and reflect it in the tab title."""
+        state.is_dirty = dirty
+        index = self._tab_index_of(state)
+        if index >= 0:
+            self._tab_widget.setTabText(index, state.display_name)
+
+    def _confirm_discard(self, state) -> bool:
+        """Ask about unsaved changes. False means the user cancelled."""
+        if not state.is_dirty:
+            return True
+        # Nothing left to save — don't prompt about a document that is gone.
+        if state.doc is None or state.doc.is_closed:
+            return True
+
+        answer = QMessageBox.warning(
+            self,
+            "Unsaved Changes",
+            f"{state.base_name} has unsaved changes.\n\n"
+            "Redactions and text edits are permanent once saved, and lost if "
+            "you discard them.",
+            QMessageBox.StandardButton.Save
+            | QMessageBox.StandardButton.Discard
+            | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Save,
+        )
+
+        if answer == QMessageBox.StandardButton.Cancel:
+            return False
+        if answer == QMessageBox.StandardButton.Save:
+            self._save_state(state)
+            # A failed or cancelled save leaves the document dirty; don't
+            # silently throw the work away.
+            return not state.is_dirty
+        return True
+
     def _on_tab_close_requested(self, index):
         """Handle tab close button click."""
         if index < 0 or index >= len(self._tab_states):
+            return
+
+        if not self._confirm_discard(self._tab_states[index]):
             return
 
         state = self._tab_states.pop(index)
@@ -496,10 +689,14 @@ class MainWindow(QMainWindow):
                 pass
             self._connected_viewer = None
 
-        if state.doc:
+        if state.doc and not state.doc.is_closed:
             state.doc.close()
 
         self._tab_widget.removeTab(index)
+        # removeTab only unparents the widget — without this the viewer stays
+        # alive holding a rendered QPixmap for every page of the document.
+        state.viewer.setParent(None)
+        state.viewer.deleteLater()
         self._update_central_view()
 
     # ── File Operations ───────────────────────────────────────
@@ -548,8 +745,7 @@ class MainWindow(QMainWindow):
         )
         self._tab_states.append(state)
 
-        filename = path.split("/")[-1]
-        tab_index = self._tab_widget.addTab(viewer, filename)
+        tab_index = self._tab_widget.addTab(viewer, state.display_name)
         self._tab_widget.setCurrentIndex(tab_index)
         self._update_central_view()
 
@@ -562,34 +758,78 @@ class MainWindow(QMainWindow):
         return fitz.open("pdf", pdf_bytes)
 
     def _quick_save(self):
-        """Save to the original file path. Falls back to Save As for image sources."""
+        """Save the active tab to its original path."""
         state = self._current_state
-        if not state or not state.doc:
+        if state:
+            self._save_state(state)
+
+    def _save_state(self, state):
+        """Save `state` in place. Falls back to Save As for image sources."""
+        if not state.doc or state.doc.is_closed:
             return
         if not state.file_path or state.is_image_source:
-            self._save_file()
+            self._save_as_state(state)
             return
+
         try:
             state.doc.saveIncr()
         except Exception:
-            # Incremental save fails on repaired files — do full save via temp file
-            try:
-                import os
-                import tempfile
-                fd, tmp = tempfile.mkstemp(suffix=".pdf", dir=os.path.dirname(state.file_path))
-                os.close(fd)
-                state.doc.save(tmp, garbage=4, deflate=True)
-                state.doc.close()
-                os.replace(tmp, state.file_path)
-                state.doc = fitz.open(state.file_path)
-                state.viewer.load_document(state.doc)
-            except Exception as e:
-                QMessageBox.critical(self, "Error", f"Could not save PDF:\n{e}")
+            # Incremental save fails on repaired files — rewrite via a temp
+            # file in the same directory so the replace is atomic.
+            if not self._rewrite_via_temp(state):
                 return
-        self.statusBar().showMessage(f"Saved to {state.file_path.split('/')[-1]}", 3000)
+
+        self._mark_dirty(state, False)
+        self.statusBar().showMessage(
+            f"Saved to {state.file_path.split('/')[-1]}", 3000
+        )
+
+    def _rewrite_via_temp(self, state):
+        """Full-save `state` over its own file. True if the file was replaced.
+
+        The document stays open until the replace has succeeded. Closing it
+        first meant a failing replace left the tab holding a closed document,
+        and reopening from the untouched original silently reverted applied
+        redactions while still advertising them as unsaved — so a retry would
+        write the unredacted file over the user's original.
+        """
+        directory = os.path.dirname(state.file_path)
+        fd, tmp = tempfile.mkstemp(suffix=".pdf", dir=directory)
+        os.close(fd)
+
+        try:
+            state.doc.save(tmp, garbage=4, deflate=True)
+            # Only let go of the original once the swap has happened: until
+            # then the open document is the only copy of the user's work.
+            os.replace(tmp, state.file_path)
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Error",
+                f"Could not save PDF:\n{e}\n\n"
+                "Your changes are still open and unsaved. Use Save As to "
+                "write them somewhere else.",
+            )
+            return False
+        finally:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+
+        # Reopen from the file just written so the viewer matches disk.
+        state.doc.close()
+        state.doc = fitz.open(state.file_path)
+        state.viewer.load_document(state.doc)
+        if state is self._current_state:
+            self._thumb_panel.load_document(state.doc)
+        return True
 
     def _save_file(self):
-        if not self._doc:
+        state = self._current_state
+        if state:
+            self._save_as_state(state)
+
+    def _save_as_state(self, state):
+        if not state.doc or state.doc.is_closed:
             return
         path, _ = QFileDialog.getSaveFileName(
             self, "Save PDF", "", "PDF Files (*.pdf)"
@@ -599,10 +839,12 @@ class MainWindow(QMainWindow):
         if not path.lower().endswith(".pdf"):
             path += ".pdf"
         try:
-            save(self._doc, path)
-            self.statusBar().showMessage(f"Saved to {path.split('/')[-1]}", 3000)
+            save(state.doc, path)
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Could not save PDF:\n{e}")
+            return
+        self._mark_dirty(state, False)
+        self.statusBar().showMessage(f"Saved to {path.split('/')[-1]}", 3000)
 
     def _open_batch_dialog(self):
         dialog = BatchDialog(self)
@@ -663,22 +905,12 @@ class MainWindow(QMainWindow):
             self._viewer.zoom_out()
 
     def _fit_width(self):
-        if not self._doc or not self._viewer:
-            return
-        page = self._doc[0]
-        viewport_width = self._viewer.viewport().width()
-        new_zoom = viewport_width / page.rect.width
-        self._viewer.set_zoom(new_zoom)
+        if self._viewer:
+            self._viewer.fit_width()
 
     def _fit_page(self):
-        if not self._doc or not self._viewer:
-            return
-        page = self._doc[0]
-        viewport_w = self._viewer.viewport().width()
-        viewport_h = self._viewer.viewport().height()
-        zoom_w = viewport_w / page.rect.width
-        zoom_h = viewport_h / page.rect.height
-        self._viewer.set_zoom(min(zoom_w, zoom_h))
+        if self._viewer:
+            self._viewer.fit_page()
 
     def _on_thumbnail_clicked(self, page_index):
         if self._viewer:
@@ -700,18 +932,15 @@ class MainWindow(QMainWindow):
         elif mode == "editor":
             self._activate_editor_mode()
 
+    # Modes set interaction state and pick which dock is raised. They do NOT
+    # open or close the panel — that stays under the user's control via the
+    # toolbar toggle / Ctrl+\ — with one exception, noted in Redact below.
+
     def _activate_reader_mode(self):
         self._mode = "reader"
         self.setWindowTitle("Obscura")
         self._status_mode = "Read"
-        # Show reader panels
-        self._thumb_dock.setVisible(True)
-        self._thumb_dock.raise_()
-        if self._doc:
-            has_toc = self._toc_panel.load_toc(self._doc)
-            self._toc_dock.setVisible(has_toc)
-        # Hide other panels
-        self._search_dock.setVisible(False)
+        self._raise_dock(self._thumb_dock)
         # Enable text selection, disable editor
         if self._viewer:
             self._viewer.set_text_selection_enabled(True)
@@ -722,12 +951,10 @@ class MainWindow(QMainWindow):
         self._mode = "redactor"
         self.setWindowTitle("Obscura — Redact")
         self._status_mode = "Redact"
-        # Hide reader panels
-        self._thumb_dock.setVisible(False)
-        self._toc_dock.setVisible(False)
-        # Show redactor panels
-        self._search_dock.setVisible(True)
-        self._search_dock.raise_()
+        # Redact is the one mode that force-opens the panel: the search input
+        # is its only entry point, so the mode is unusable without it. The
+        # user can collapse it again and that choice is what persists.
+        self._set_panel_open(True, raise_dock=self._search_dock)
         # Disable text selection and editor
         if self._viewer:
             self._viewer.set_text_selection_enabled(False)
@@ -739,10 +966,7 @@ class MainWindow(QMainWindow):
         self._mode = "editor"
         self.setWindowTitle("Obscura — Edit")
         self._status_mode = "Edit"
-        # Hide all side panels
-        self._thumb_dock.setVisible(False)
-        self._toc_dock.setVisible(False)
-        self._search_dock.setVisible(False)
+        self._raise_dock(self._thumb_dock)
         # Disable text selection, enable editor
         if self._viewer:
             self._viewer.set_text_selection_enabled(False)
@@ -817,8 +1041,8 @@ class MainWindow(QMainWindow):
                 matches = page.search_for(keyword, textpage=tp)
             else:
                 matches = page.search_for(keyword)
-            for rect in matches:
-                snippet = self._extract_snippet(page, rect, keyword, tp)
+            for occurrence, rect in enumerate(matches):
+                snippet = self._extract_snippet(page, keyword, occurrence, tp)
                 results.append(SearchResult(page_index, rect, snippet))
                 highlights.setdefault(page_index, []).append(rect)
 
@@ -826,15 +1050,33 @@ class MainWindow(QMainWindow):
         self._search_panel.set_results(results)
         state.viewer.set_highlights(highlights)
 
-    def _extract_snippet(self, page, rect, keyword, textpage=None, context_chars=30):
-        """Get surrounding text around a match rectangle."""
+    def _extract_snippet(
+        self, page, keyword, occurrence, textpage=None, context_chars=30
+    ):
+        """Text surrounding the Nth occurrence of `keyword` on this page.
+
+        search_for() returns matches in reading order and str.find walks the
+        extracted text in that same order, so the Nth rect corresponds to the
+        Nth occurrence. Without the index every match on a page produced the
+        same snippet, which made the results list useless for choosing which
+        occurrence to redact.
+        """
         if textpage:
             text = page.get_text("text", textpage=textpage)
         else:
             text = page.get_text("text")
-        idx = text.lower().find(keyword.lower())
-        if idx == -1:
-            return keyword
+
+        needle = keyword.lower()
+        haystack = text.lower()
+        idx = -1
+        for _ in range(occurrence + 1):
+            idx = haystack.find(needle, idx + 1)
+            if idx == -1:
+                # Fewer text occurrences than rects — possible when the text
+                # layer differs from what search_for matched (ligatures, odd
+                # encodings). Fall back rather than mislabel the row.
+                return keyword
+
         start = max(0, idx - context_chars)
         end = min(len(text), idx + len(keyword) + context_chars)
         snippet = text[start:end].replace("\n", " ").strip()
@@ -896,6 +1138,7 @@ class MainWindow(QMainWindow):
         if dialog.exec() == PreviewDialog.DialogCode.Accepted:
             # Apply redactions permanently
             apply_redactions(doc)
+            self._mark_dirty(state)
             state.search_results.clear()
             self._search_panel.clear_results()
             viewer.clear_highlights()
@@ -941,6 +1184,7 @@ class MainWindow(QMainWindow):
         )
 
         # Refresh viewer and thumbnails
+        self._mark_dirty(state)
         state.viewer.refresh()
         self._thumb_panel.load_document(state.doc)
         self.statusBar().showMessage("Text edited", 3000)

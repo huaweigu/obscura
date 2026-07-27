@@ -250,6 +250,9 @@ def add_text_annotation(page, point, text, fontsize=12):
 
     Creates a rectangle sized to roughly fit the text and places a
     freetext annotation there.
+
+    Not currently reachable from the UI — kept as the building block for an
+    annotation feature, and covered by tests so it stays working.
     """
     # Estimate a reasonable rect for the text
     width = max(len(text) * fontsize * 0.6, 100)

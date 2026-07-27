@@ -2,6 +2,7 @@ import sys
 
 import fitz
 import pytest
+from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QApplication
 
 
@@ -12,6 +13,27 @@ def qapp():
     if app is None:
         app = QApplication(sys.argv)
     return app
+
+
+@pytest.fixture(autouse=True)
+def isolated_settings(tmp_path, monkeypatch):
+    """Back MainWindow's QSettings with a per-test INI file.
+
+    MainWindow persists panel state via QSettings. Without this, tests would
+    read and write the developer's real preferences (on macOS, the
+    com.obscura.Obscura plist domain) and leak state into each other.
+
+    Note: QSettings.setDefaultFormat/setPath are NOT sufficient here — on
+    macOS a QSettings built from org/app names still resolves to the native
+    plist domain. Substituting the constructor is the reliable isolation.
+    """
+    ini_path = str(tmp_path / "obscura.ini")
+
+    def _isolated_settings(*_args, **_kwargs):
+        return QSettings(ini_path, QSettings.Format.IniFormat)
+
+    monkeypatch.setattr("app.main_window.QSettings", _isolated_settings)
+    yield
 
 
 @pytest.fixture()

@@ -29,6 +29,16 @@ QToolBar QToolButton:hover {
 QToolBar QToolButton:pressed {
     background: #4a9eff;
 }
+/* Checkable toolbar actions (the panel toggle) need a legible on-state. */
+QToolBar QToolButton:checked {
+    background: #4a9eff;
+    border-color: #4a9eff;
+    color: #ffffff;
+}
+QToolBar QToolButton:checked:hover {
+    background: #3d8ae5;
+    border-color: #3d8ae5;
+}
 QToolBar::separator {
     background: #0f3460;
     width: 1px;
