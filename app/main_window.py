@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 
 import fitz
 from PySide6.QtCore import QSettings, Qt, Signal
-from PySide6.QtGui import QAction, QKeySequence, QShortcut
+from PySide6.QtGui import QAction, QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QComboBox,
     QDockWidget,
@@ -37,6 +37,13 @@ IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif")
 PANEL_DEFAULT_WIDTH = 260
 SETTINGS_ORG = "Obscura"
 SETTINGS_APP = "Obscura"
+
+# First launch sizes the window to most of the display rather than a fixed
+# box, which is tiny on a large monitor. After that the user's own window
+# geometry is restored.
+DEFAULT_SCREEN_FRACTION = 0.9
+MIN_WINDOW_WIDTH = 900
+MIN_WINDOW_HEIGHT = 600
 
 
 # ── Segmented Control Widget ────────────────────────────────
@@ -178,7 +185,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Obscura")
-        self.resize(1200, 800)
+        self.setMinimumSize(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
         self.setAcceptDrops(True)
 
         self._tab_states: list[DocumentState] = []
@@ -200,6 +207,7 @@ class MainWindow(QMainWindow):
         self._setup_toolbar()
         self._setup_statusbar()
         self._setup_shortcuts()
+        self._restore_window_geometry()
         self._restore_panel_settings()
 
     # ── Properties (delegate to active tab) ───────────────────
@@ -363,6 +371,56 @@ class MainWindow(QMainWindow):
         self._set_panel_open(True, raise_dock=self._search_dock)
         self._search_panel.focus_input()
 
+    # ── Window geometry ───────────────────────────────────────
+
+    def _restore_window_geometry(self):
+        """Restore the last window geometry, or size to the display."""
+        saved = self._settings.value("window/geometry")
+        if saved is not None:
+            try:
+                restored = self.restoreGeometry(saved)
+            except (TypeError, ValueError):
+                restored = False
+            # A geometry saved on a monitor that is no longer attached can
+            # land the window off-screen, so check it before trusting it.
+            if restored and self._is_on_screen():
+                return
+        self._size_to_screen()
+
+    def _is_on_screen(self):
+        frame = self.frameGeometry()
+        return any(
+            screen.availableGeometry().intersects(frame)
+            for screen in QGuiApplication.screens()
+        )
+
+    def _size_to_screen(self):
+        """Take most of the display, centred — the first-launch default."""
+        screen = self.screen() or QGuiApplication.primaryScreen()
+        if screen is None:
+            self.resize(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
+            return
+
+        available = screen.availableGeometry()
+        width = min(
+            max(int(available.width() * DEFAULT_SCREEN_FRACTION), MIN_WINDOW_WIDTH),
+            available.width(),
+        )
+        height = min(
+            max(int(available.height() * DEFAULT_SCREEN_FRACTION), MIN_WINDOW_HEIGHT),
+            available.height(),
+        )
+        self.resize(width, height)
+
+        frame = self.frameGeometry()
+        frame.moveCenter(available.center())
+        self.move(frame.topLeft())
+
+    def _save_window_geometry(self):
+        # saveGeometry records the normal geometry alongside the maximised /
+        # full-screen state, so restoring brings back whichever the user left.
+        self._settings.setValue("window/geometry", self.saveGeometry())
+
     def _restore_panel_settings(self):
         """Load the stored panel preference.
 
@@ -395,6 +453,7 @@ class MainWindow(QMainWindow):
 
         self._capture_panel_width()
         self._save_panel_settings()
+        self._save_window_geometry()
         event.accept()
         super().closeEvent(event)
 

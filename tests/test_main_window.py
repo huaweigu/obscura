@@ -154,6 +154,76 @@ class TestModeSwitch:
         assert win._viewer._text_selection_enabled is False
 
 
+# \u2500\u2500 TestWindowGeometry \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+
+
+class TestWindowGeometry:
+    """A fixed 1200x800 default is small on a large monitor."""
+
+    def test_first_launch_takes_most_of_the_screen(self, main_window):
+        from PySide6.QtGui import QGuiApplication
+
+        from app.main_window import DEFAULT_SCREEN_FRACTION
+
+        available = QGuiApplication.primaryScreen().availableGeometry()
+        # Allow slack for window frame and rounding.
+        assert main_window.width() >= int(
+            available.width() * DEFAULT_SCREEN_FRACTION
+        ) - 10
+        assert main_window.height() >= int(
+            available.height() * DEFAULT_SCREEN_FRACTION
+        ) - 10
+
+    def test_default_window_never_exceeds_the_screen(self, main_window):
+        from PySide6.QtGui import QGuiApplication
+
+        available = QGuiApplication.primaryScreen().availableGeometry()
+        assert main_window.width() <= available.width()
+        assert main_window.height() <= available.height()
+
+    def test_window_has_a_usable_minimum(self, main_window):
+        from app.main_window import MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH
+
+        assert main_window.minimumWidth() == MIN_WINDOW_WIDTH
+        assert main_window.minimumHeight() == MIN_WINDOW_HEIGHT
+
+    def test_geometry_persists_across_windows(self, main_window):
+        from app.main_window import MainWindow
+
+        main_window.resize(1010, 720)
+        main_window.close()  # closeEvent flushes geometry
+
+        fresh = MainWindow()
+        try:
+            assert fresh.width() == 1010
+            assert fresh.height() == 720
+        finally:
+            fresh.close()
+
+    def test_corrupt_stored_geometry_falls_back_to_screen_size(
+        self, qapp, tmp_path
+    ):
+        from PySide6.QtCore import QSettings as RealQSettings
+        from PySide6.QtGui import QGuiApplication
+
+        from app.main_window import DEFAULT_SCREEN_FRACTION, MainWindow
+
+        ini = tmp_path / "badgeom.ini"
+        settings = RealQSettings(str(ini), RealQSettings.Format.IniFormat)
+        settings.setValue("window/geometry", "this is not a QByteArray")
+        settings.sync()
+
+        with mock.patch("app.main_window.QSettings", lambda *a, **k: settings):
+            win = MainWindow()
+            try:
+                available = QGuiApplication.primaryScreen().availableGeometry()
+                assert win.width() >= int(
+                    available.width() * DEFAULT_SCREEN_FRACTION
+                ) - 10
+            finally:
+                win.close()
+
+
 # \u2500\u2500 TestPanelToggle \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 
