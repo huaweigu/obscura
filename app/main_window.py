@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.batch_dialog import BatchDialog
-from app.pdf_viewer import PdfViewer
+from app.pdf_viewer import FIT_PAGE, FIT_WIDTH, PdfViewer
 from app.preview_dialog import PreviewDialog
 from app.redactor import apply_redactions, mark_for_redaction, save
 from app.search_panel import SearchPanel, SearchResult
@@ -586,7 +586,7 @@ class MainWindow(QMainWindow):
             total = len(state.doc)
             current_page = viewer.current_page()
             self._page_label.setText(f"{current_page} / {total}")
-            self._zoom_combo.setCurrentText(f"{int(viewer.zoom * 100)}%")
+            self._zoom_combo.setCurrentText(self._zoom_display())
             self._status_file = f"File: {state.file_path.split('/')[-1]}"
             self._status_page = f"Page {current_page} / {total}"
             self._update_status()
@@ -818,7 +818,8 @@ class MainWindow(QMainWindow):
         # Reopen from the file just written so the viewer matches disk.
         state.doc.close()
         state.doc = fitz.open(state.file_path)
-        state.viewer.load_document(state.doc)
+        # Same document, rewritten — keep the reader where they were.
+        state.viewer.load_document(state.doc, reset_position=False)
         if state is self._current_state:
             self._thumb_panel.load_document(state.doc)
         return True
@@ -976,8 +977,19 @@ class MainWindow(QMainWindow):
 
     # ── Zoom ──────────────────────────────────────────────────
 
+    def _zoom_display(self):
+        """What the zoom box should read: a fit mode name, or a percentage."""
+        viewer = self._viewer
+        if viewer is None or viewer.doc is None:
+            return "---"
+        if viewer.fit_mode == FIT_WIDTH:
+            return "Fit Width"
+        if viewer.fit_mode == FIT_PAGE:
+            return "Fit Page"
+        return f"{int(viewer.zoom * 100)}%"
+
     def _on_zoom_changed(self, zoom):
-        self._zoom_combo.setCurrentText(f"{int(zoom * 100)}%")
+        self._zoom_combo.setCurrentText(self._zoom_display())
 
     def _on_zoom_combo_activated(self, index):
         """Handle selecting a zoom preset from the dropdown."""
@@ -1005,8 +1017,7 @@ class MainWindow(QMainWindow):
         try:
             pct = float(text)
         except ValueError:
-            if self._viewer:
-                self._zoom_combo.setCurrentText(f"{int(self._viewer.zoom * 100)}%")
+            self._zoom_combo.setCurrentText(self._zoom_display())
             return
         if self._viewer:
             self._viewer.set_zoom(pct / 100.0)

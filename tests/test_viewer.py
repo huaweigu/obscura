@@ -166,6 +166,44 @@ class TestFitModes:
         viewer.fit_page()
         assert viewer.zoom == 1.0
 
+    def test_apply_fit_always_reports_a_bool(self, qapp, sample_pdf):
+        """_run_pending_fit uses the answer to tell a converged fit from one
+        still settling, so None would be read as 'converged'."""
+        viewer = PdfViewer()
+        assert viewer._apply_fit() is False  # no document
+
+        doc = fitz.open(sample_pdf)
+        viewer.load_document(doc)
+        try:
+            assert isinstance(viewer._apply_fit(), bool)
+            viewer.show()
+            viewer.resize(900, 700)
+            _settle()
+            assert isinstance(viewer._apply_fit(), bool)
+        finally:
+            viewer.close()
+            doc.close()
+
+    def test_reload_can_keep_the_scroll_position(self, qapp, sample_pdf):
+        doc = fitz.open(sample_pdf)
+        viewer = _shown_viewer(doc)
+        try:
+            viewer.scroll_to_page(2)
+            _settle()
+            before = viewer.verticalScrollBar().value()
+            assert before > 0
+
+            viewer.load_document(doc, reset_position=False)
+            _settle()
+            assert viewer.verticalScrollBar().value() > 0
+
+            viewer.load_document(doc)  # default: opening a file starts at top
+            _settle()
+            assert viewer.verticalScrollBar().value() == 0
+        finally:
+            viewer.close()
+            doc.close()
+
 
 # ── TestZoomStability ───────────────────────────────────────
 

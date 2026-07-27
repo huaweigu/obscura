@@ -267,6 +267,10 @@ class PageLabel(QLabel):
         painter.end()
 
 
+FIT_WIDTH = "width"
+FIT_PAGE = "page"
+
+
 class PdfViewer(QScrollArea):
     """Scrollable multi-page PDF viewer with zoom, highlight, and text selection support."""
 
@@ -295,6 +299,13 @@ class PdfViewer(QScrollArea):
         self._last_reported_page = -1
         self._text_selection_enabled = False
         self._editor_mode_enabled = False
+        # Documents open fitted to the window, like Preview/Acrobat/Chrome,
+        # rather than at a fixed 100%. The mode is sticky: it survives window
+        # resizes and panel toggles, and is dropped only when the user picks
+        # an explicit zoom.
+        self._fit_mode = FIT_WIDTH
+        self._fit_pending = False
+        self._scroll_top_after_fit = False
 
         self.verticalScrollBar().valueChanged.connect(self._on_scroll)
 
@@ -310,11 +321,60 @@ class PdfViewer(QScrollArea):
     def page_count(self):
         return len(self._doc) if self._doc else 0
 
-    def load_document(self, doc):
-        """Load a fitz.Document and render all pages."""
+    @property
+    def fit_mode(self):
+        """FIT_WIDTH, FIT_PAGE, or None when an explicit zoom is in force."""
+        return self._fit_mode
+
+    def load_document(self, doc, reset_position=True):
+        """Load a fitz.Document and render all pages.
+
+        `reset_position` starts the reader at the top, which is right when
+        opening a file. Callers that are reloading the *same* document — a
+        save that rewrites the file, say — pass False so the reader stays
+        where they were.
+        """
         self._doc = doc
         self._highlights.clear()
-        self._render_all()
+        self._active_page = None
+        self._active_rect = None
+        self._scroll_top_after_fit = reset_position
+        if self._fit_mode:
+            # Sizes the page to the window instead of opening at a fixed 100%.
+            # If the widget has no geometry yet, resizeEvent re-fits later.
+            self._apply_fit()
+        else:
+            self._render_all()
+        if reset_position:
+            self.verticalScrollBar().setValue(0)
+
+    def resizeEvent(self, event):
+        """Keep the page fitted when the window or the side panel changes."""
+        super().resizeEvent(event)
+        if self._fit_mode and self._doc:
+            self._schedule_fit()
+
+    def _schedule_fit(self):
+        """Re-fit once the current layout pass has finished.
+
+        Re-rendering inside resizeEvent fights Qt's own layout: the page
+        widgets end up sharing one geometry and the scroll range collapses to
+        zero. Deferring lets the resize complete first, and coalesces the
+        burst of resizes produced by dragging a window edge.
+        """
+        if self._fit_pending:
+            return
+        self._fit_pending = True
+        QTimer.singleShot(0, self, self._run_pending_fit)
+
+    def _run_pending_fit(self):
+        self._fit_pending = False
+        changed = bool(self._fit_mode and self._doc) and self._apply_fit()
+        if self._scroll_top_after_fit and not changed:
+            # The fit has converged, so this is the reader's real starting
+            # position. Release the pin.
+            self._scroll_top_after_fit = False
+            self.verticalScrollBar().setValue(0)
 
     def _render_all(self):
         """Render all pages at the current zoom level.
@@ -408,16 +468,33 @@ class PdfViewer(QScrollArea):
         )
 
     def set_zoom(self, zoom):
-        """Set the zoom level and re-render, keeping the reader's place."""
-        anchor = self._scroll_anchor()
-        self._zoom = max(0.05, min(zoom, 5.0))
+        """Set an explicit zoom level. This leaves any active fit mode."""
+        self._fit_mode = None
+        self._apply_zoom(zoom)
+
+    @staticmethod
+    def _clamp_zoom(zoom):
+        return max(0.05, min(zoom, 5.0))
+
+    def _apply_zoom(self, zoom):
+        """Re-render at `zoom`, keeping the reader's place. Fit mode intact."""
+        # A freshly opened document has no place to keep — pin it to the top
+        # until the fit has converged, otherwise the anchor computed against
+        # half-laid-out geometry drops the reader into the middle of page 1.
+        anchor = None if self._scroll_top_after_fit else self._scroll_anchor()
+        self._zoom = self._clamp_zoom(zoom)
         self._render_all()
         # The new page geometry has to exist before the anchor can be mapped
         # onto it. Deferring to the event loop is not enough — the timer fires
         # before the layout is recomputed — so force the layout here.
+        # Note: only activate() the layout. adjustSize() on the container
+        # fights setWidgetResizable(True), which leaves every page sharing one
+        # geometry and collapses the scroll range until the next layout pass.
         self._layout.activate()
-        self._container.adjustSize()
-        self._restore_scroll_anchor(anchor)
+        if anchor is None:
+            self.verticalScrollBar().setValue(0)
+        else:
+            self._restore_scroll_anchor(anchor)
         # Belt and braces: if the scroll range only widens on a later resize
         # event, the value above would have been clamped. Re-apply once Qt has
         # settled. `self` is passed as the context object so the callback is
@@ -474,29 +551,49 @@ class PdfViewer(QScrollArea):
         )
 
     def fit_width(self):
-        """Zoom so the widest page fits the viewport without overflowing."""
-        if not self._doc or len(self._doc) == 0:
-            return
-        widest = max(page.rect.width for page in self._doc)
-        if widest <= 0:
-            return
-        available, _ = self._fit_available()
-        if available <= 0:
-            return
-        self.set_zoom(available / widest)
+        """Fit the widest page to the viewport width, and stay fitted."""
+        self._fit_mode = FIT_WIDTH
+        self._apply_fit()
 
     def fit_page(self):
-        """Zoom so a whole page fits the viewport on both axes."""
+        """Fit a whole page into the viewport, and stay fitted."""
+        self._fit_mode = FIT_PAGE
+        self._apply_fit()
+
+    def _apply_fit(self):
+        """Recompute the zoom for the current fit mode and viewport.
+
+        Returns True if that re-rendered. _run_pending_fit uses the answer to
+        tell a converged fit from one still settling, so every path here must
+        report a bool.
+        """
         if not self._doc or len(self._doc) == 0:
-            return
+            return False
         widest = max(page.rect.width for page in self._doc)
         tallest = max(page.rect.height for page in self._doc)
         if widest <= 0 or tallest <= 0:
-            return
+            return False
+
         avail_w, avail_h = self._fit_available()
-        if avail_w <= 0 or avail_h <= 0:
-            return
-        self.set_zoom(min(avail_w / widest, avail_h / tallest))
+        if avail_w <= 0:
+            return False
+
+        if self._fit_mode == FIT_PAGE:
+            if avail_h <= 0:
+                return False
+            zoom = min(avail_w / widest, avail_h / tallest)
+        else:
+            zoom = avail_w / widest
+
+        # Compare against the clamped value: re-rendering is what makes the
+        # scrollbar appear or disappear, which resizes the viewport, which
+        # schedules another fit. Without this the viewer re-renders forever.
+        zoom = self._clamp_zoom(zoom)
+        if abs(zoom - self._zoom) < 1e-6:
+            return False
+
+        self._apply_zoom(zoom)
+        return True
 
     def set_highlights(self, highlights_by_page):
         """Set highlight rectangles. highlights_by_page: dict of page_index -> [fitz.Rect]."""
