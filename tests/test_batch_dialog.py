@@ -156,7 +156,11 @@ class TestShrinkFlow:
         assert (out / "two.jpg").exists()
         processed = dlg._lbl_shrink_processed.findChild(QLabel, "value").text()
         assert processed == "2"
-        assert dlg._shrink_results_container.isVisible() or not dlg.isVisible()
+        # isVisible() is False while the dialog is not shown on screen, so
+        # check the widget's own flag instead — matching the convention used
+        # elsewhere in this suite.
+        assert not dlg._shrink_results_container.isHidden()
+        assert dlg._shrink_btn.isEnabled()
 
     def test_progress_handler_updates_the_bar(self, qapp):
         dlg = BatchDialog()
