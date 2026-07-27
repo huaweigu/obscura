@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import tempfile
 from dataclasses import dataclass, field
 
 import fitz
@@ -156,6 +158,14 @@ class DocumentState:
     search_results: list = field(default_factory=list)
     ocr_textpages: dict = field(default_factory=dict)
     is_image_source: bool = False
+    # Set when the in-memory document diverges from the file on disk, i.e.
+    # after redactions are applied or text is edited.
+    is_dirty: bool = False
+
+    @property
+    def display_name(self) -> str:
+        name = self.file_path.split("/")[-1] if self.file_path else "Untitled"
+        return f"{name} •" if self.is_dirty else name
 
 
 # ── Main Window ─────────────────────────────────────────────
@@ -363,8 +373,15 @@ class MainWindow(QMainWindow):
         self._settings.setValue("panel/width", self._panel_width)
 
     def closeEvent(self, event):
+        # Ask about every document with unsaved work before quitting.
+        for state in list(self._tab_states):
+            if not self._confirm_discard(state):
+                event.ignore()
+                return
+
         self._capture_panel_width()
         self._save_panel_settings()
+        event.accept()
         super().closeEvent(event)
 
     def _setup_toolbar(self):
@@ -591,9 +608,50 @@ class MainWindow(QMainWindow):
 
         self._update_central_view()
 
+    def _mark_dirty(self, state, dirty=True):
+        """Flag unsaved changes and reflect it in the tab title."""
+        state.is_dirty = dirty
+        try:
+            index = self._tab_states.index(state)
+        except ValueError:
+            return
+        self._tab_widget.setTabText(index, state.display_name)
+
+    def _confirm_discard(self, state) -> bool:
+        """Ask about unsaved changes. False means the user cancelled."""
+        if not state.is_dirty:
+            return True
+        # Nothing left to save — don't prompt about a document that is gone.
+        if state.doc is None or state.doc.is_closed:
+            return True
+
+        answer = QMessageBox.warning(
+            self,
+            "Unsaved Changes",
+            f"{state.display_name.rstrip(' •')} has unsaved changes.\n\n"
+            "Redactions and text edits are permanent once saved, and lost if "
+            "you discard them.",
+            QMessageBox.StandardButton.Save
+            | QMessageBox.StandardButton.Discard
+            | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Save,
+        )
+
+        if answer == QMessageBox.StandardButton.Cancel:
+            return False
+        if answer == QMessageBox.StandardButton.Save:
+            self._save_state(state)
+            # A failed or cancelled save leaves the document dirty; don't
+            # silently throw the work away.
+            return not state.is_dirty
+        return True
+
     def _on_tab_close_requested(self, index):
         """Handle tab close button click."""
         if index < 0 or index >= len(self._tab_states):
+            return
+
+        if not self._confirm_discard(self._tab_states[index]):
             return
 
         state = self._tab_states.pop(index)
@@ -608,10 +666,14 @@ class MainWindow(QMainWindow):
                 pass
             self._connected_viewer = None
 
-        if state.doc:
+        if state.doc and not state.doc.is_closed:
             state.doc.close()
 
         self._tab_widget.removeTab(index)
+        # removeTab only unparents the widget — without this the viewer stays
+        # alive holding a rendered QPixmap for every page of the document.
+        state.viewer.setParent(None)
+        state.viewer.deleteLater()
         self._update_central_view()
 
     # ── File Operations ───────────────────────────────────────
@@ -660,8 +722,7 @@ class MainWindow(QMainWindow):
         )
         self._tab_states.append(state)
 
-        filename = path.split("/")[-1]
-        tab_index = self._tab_widget.addTab(viewer, filename)
+        tab_index = self._tab_widget.addTab(viewer, state.display_name)
         self._tab_widget.setCurrentIndex(tab_index)
         self._update_central_view()
 
@@ -674,34 +735,67 @@ class MainWindow(QMainWindow):
         return fitz.open("pdf", pdf_bytes)
 
     def _quick_save(self):
-        """Save to the original file path. Falls back to Save As for image sources."""
+        """Save the active tab to its original path."""
         state = self._current_state
-        if not state or not state.doc:
+        if state:
+            self._save_state(state)
+
+    def _save_state(self, state):
+        """Save `state` in place. Falls back to Save As for image sources."""
+        if not state.doc or state.doc.is_closed:
             return
         if not state.file_path or state.is_image_source:
-            self._save_file()
+            self._save_as_state(state)
             return
+
         try:
             state.doc.saveIncr()
         except Exception:
-            # Incremental save fails on repaired files — do full save via temp file
-            try:
-                import os
-                import tempfile
-                fd, tmp = tempfile.mkstemp(suffix=".pdf", dir=os.path.dirname(state.file_path))
-                os.close(fd)
-                state.doc.save(tmp, garbage=4, deflate=True)
-                state.doc.close()
-                os.replace(tmp, state.file_path)
+            # Incremental save fails on repaired files — rewrite via a temp
+            # file in the same directory so the replace is atomic.
+            if not self._rewrite_via_temp(state):
+                return
+
+        self._mark_dirty(state, False)
+        self.statusBar().showMessage(
+            f"Saved to {state.file_path.split('/')[-1]}", 3000
+        )
+
+    def _rewrite_via_temp(self, state):
+        """Full-save `state` over its own file. True if the file was replaced.
+
+        The document is reopened whatever happens, so a failure never leaves
+        the tab holding a closed document.
+        """
+        directory = os.path.dirname(state.file_path)
+        fd, tmp = tempfile.mkstemp(suffix=".pdf", dir=directory)
+        os.close(fd)
+
+        replaced = False
+        try:
+            state.doc.save(tmp, garbage=4, deflate=True)
+            state.doc.close()
+            os.replace(tmp, state.file_path)
+            replaced = True
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Could not save PDF:\n{e}")
+        finally:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+            if state.doc.is_closed:
                 state.doc = fitz.open(state.file_path)
                 state.viewer.load_document(state.doc)
-            except Exception as e:
-                QMessageBox.critical(self, "Error", f"Could not save PDF:\n{e}")
-                return
-        self.statusBar().showMessage(f"Saved to {state.file_path.split('/')[-1]}", 3000)
+                if state is self._current_state:
+                    self._thumb_panel.load_document(state.doc)
+        return replaced
 
     def _save_file(self):
-        if not self._doc:
+        state = self._current_state
+        if state:
+            self._save_as_state(state)
+
+    def _save_as_state(self, state):
+        if not state.doc or state.doc.is_closed:
             return
         path, _ = QFileDialog.getSaveFileName(
             self, "Save PDF", "", "PDF Files (*.pdf)"
@@ -711,10 +805,12 @@ class MainWindow(QMainWindow):
         if not path.lower().endswith(".pdf"):
             path += ".pdf"
         try:
-            save(self._doc, path)
-            self.statusBar().showMessage(f"Saved to {path.split('/')[-1]}", 3000)
+            save(state.doc, path)
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Could not save PDF:\n{e}")
+            return
+        self._mark_dirty(state, False)
+        self.statusBar().showMessage(f"Saved to {path.split('/')[-1]}", 3000)
 
     def _open_batch_dialog(self):
         dialog = BatchDialog(self)
@@ -1008,6 +1104,7 @@ class MainWindow(QMainWindow):
         if dialog.exec() == PreviewDialog.DialogCode.Accepted:
             # Apply redactions permanently
             apply_redactions(doc)
+            self._mark_dirty(state)
             state.search_results.clear()
             self._search_panel.clear_results()
             viewer.clear_highlights()
@@ -1053,6 +1150,7 @@ class MainWindow(QMainWindow):
         )
 
         # Refresh viewer and thumbnails
+        self._mark_dirty(state)
         state.viewer.refresh()
         self._thumb_panel.load_document(state.doc)
         self.statusBar().showMessage("Text edited", 3000)
