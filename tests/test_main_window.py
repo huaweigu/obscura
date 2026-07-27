@@ -352,9 +352,19 @@ class TestZoomControls:
         win = main_window_with_pdf
         original_zoom = win._viewer.zoom
         win._apply_zoom_text("abc")
-        # Invalid input should revert combo to current zoom
+        # Invalid input should leave the zoom alone and put the box back to
+        # whatever it was showing — a percentage, or a fit mode name.
         assert win._viewer.zoom == original_zoom
-        assert win._zoom_combo.currentText() == f"{int(original_zoom * 100)}%"
+        assert win._zoom_combo.currentText() == win._zoom_display()
+
+    def test_invalid_zoom_reverts_to_percentage_when_not_fitted(
+        self, main_window_with_pdf
+    ):
+        win = main_window_with_pdf
+        win._apply_zoom_text("150%")  # explicit zoom leaves fit mode
+        win._apply_zoom_text("abc")
+        assert win._viewer.zoom == 1.5
+        assert win._zoom_combo.currentText() == "150%"
 
 
 # ── TestSearch ──────────────────────────────────────────────

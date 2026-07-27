@@ -91,6 +91,125 @@ class TestFitFromToolbar:
             _close(win)
 
 
+class TestDocumentOpensFitted:
+    """Opening at a fixed 100% left the page as a narrow column with dead
+    space either side. Viewers fit the page to the window instead."""
+
+    def test_document_fills_the_window_width_on_open(self, qapp, sample_pdf):
+        win = _open(qapp, sample_pdf)
+        try:
+            viewer = win._viewer
+            assert viewer.fit_mode == "width"
+
+            page_px = viewer._page_labels[0].pixmap().width()
+            margins = viewer._layout.contentsMargins()
+            used = page_px + margins.left() + margins.right()
+
+            # The page should occupy essentially the whole viewport, and never
+            # overflow it.
+            assert used <= viewer.viewport().width()
+            assert used >= viewer.viewport().width() - 40
+            assert viewer.horizontalScrollBar().maximum() == 0
+        finally:
+            _close(win)
+
+    def test_open_starts_at_the_top_of_page_one(self, qapp, sample_pdf):
+        win = _open(qapp, sample_pdf)
+        try:
+            assert win._viewer.verticalScrollBar().value() == 0
+            assert win._viewer.current_page() == 1
+        finally:
+            _close(win)
+
+    def test_zoom_box_shows_the_fit_mode(self, qapp, sample_pdf):
+        win = _open(qapp, sample_pdf)
+        try:
+            assert win._zoom_combo.currentText() == "Fit Width"
+        finally:
+            _close(win)
+
+    def test_explicit_zoom_leaves_fit_mode(self, qapp, sample_pdf):
+        win = _open(qapp, sample_pdf)
+        try:
+            win._apply_zoom_text("125%")
+            _settle(qapp)
+            assert win._viewer.fit_mode is None
+            assert win._zoom_combo.currentText() == "125%"
+        finally:
+            _close(win)
+
+    def test_zoom_buttons_leave_fit_mode(self, qapp, sample_pdf):
+        win = _open(qapp, sample_pdf)
+        try:
+            win._zoom_in()
+            _settle(qapp)
+            assert win._viewer.fit_mode is None
+        finally:
+            _close(win)
+
+
+class TestFitIsSticky:
+    def test_opening_the_panel_refits_the_page(self, qapp, sample_pdf):
+        """The panel steals ~260px; a sticky fit must give the page the new
+        width rather than leaving a stale zoom."""
+        win = _open(qapp, sample_pdf)
+        try:
+            wide_zoom = win._viewer.zoom
+
+            win._toggle_panel()
+            _settle(qapp)
+
+            assert win._viewer.zoom < wide_zoom
+            assert win._viewer.horizontalScrollBar().maximum() == 0
+            assert win._viewer.fit_mode == "width"
+        finally:
+            _close(win)
+
+    def test_resizing_the_window_refits_the_page(self, qapp, sample_pdf):
+        win = _open(qapp, sample_pdf)
+        try:
+            before = win._viewer.zoom
+
+            win.resize(800, 800)
+            _settle(qapp)
+            assert win._viewer.zoom < before
+
+            win.resize(1400, 800)
+            _settle(qapp)
+            assert win._viewer.zoom > before
+            assert win._viewer.horizontalScrollBar().maximum() == 0
+        finally:
+            _close(win)
+
+    def test_explicit_zoom_is_not_undone_by_a_resize(self, qapp, sample_pdf):
+        win = _open(qapp, sample_pdf)
+        try:
+            win._apply_zoom_text("150%")
+            _settle(qapp)
+
+            win.resize(900, 800)
+            _settle(qapp)
+
+            assert win._viewer.fit_mode is None
+            assert win._viewer.zoom == 1.5
+        finally:
+            _close(win)
+
+    def test_refitting_when_already_fitted_does_not_rerender(
+        self, qapp, sample_pdf
+    ):
+        """Guards the feedback loop: a re-render toggles the scrollbar, which
+        resizes the viewport, which would schedule another fit forever."""
+        win = _open(qapp, sample_pdf)
+        try:
+            labels_before = list(win._viewer._page_labels)
+            assert win._viewer._apply_fit() is False
+            assert win._viewer._page_labels == labels_before
+            assert win._viewer._fit_pending is False
+        finally:
+            _close(win)
+
+
 class TestSearchThenZoomWorkflow:
     def test_zooming_keeps_the_active_result_marked(self, qapp, sample_pdf):
         """Full user path: search, click a result, zoom in to read it."""
@@ -117,9 +236,14 @@ class TestSearchThenZoomWorkflow:
     def test_zoom_keeps_the_reader_on_the_same_page(self, qapp, sample_pdf):
         win = _open(qapp, sample_pdf)
         try:
+            # Leave fit mode first, so the scroll position under test is not
+            # being re-derived by a pending re-fit.
+            win._apply_zoom_text("100%")
+            _settle(qapp)
             win._goto_page(3)
             _settle(qapp)
             before = win._viewer.current_page()
+            assert before == 3
 
             win._apply_zoom_text("200%")
             _settle(qapp)
