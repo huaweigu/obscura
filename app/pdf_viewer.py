@@ -1,5 +1,5 @@
 import fitz
-from PySide6.QtCore import QRect, Qt, Signal
+from PySide6.QtCore import QRect, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QGraphicsDropShadowEffect,
@@ -185,9 +185,14 @@ class PageLabel(QLabel):
     def _cancel_inline_edit(self):
         """Cancel the inline edit without committing."""
         if self._inline_editor:
+            self._inline_editor.removeEventFilter(self)
             self._inline_editor.deleteLater()
             self._inline_editor = None
             self._editing_span = None
+
+    def cancel_inline_edit(self):
+        """Public alias — used by the viewer before it discards this label."""
+        self._cancel_inline_edit()
 
     def eventFilter(self, obj, event):
         """Handle Escape key and focus-out on the inline editor."""
@@ -283,6 +288,10 @@ class PdfViewer(QScrollArea):
         self._zoom = 1.0  # default DPI multiplier (1.0 = 72 DPI)
         self._page_labels = []  # list of PageLabel widgets
         self._highlights = {}  # page_index -> list of fitz.Rect
+        # Active (focused) result, kept at viewer level so it survives the
+        # full re-render that every zoom change performs.
+        self._active_page = None
+        self._active_rect = None
         self._last_reported_page = -1
         self._text_selection_enabled = False
         self._editor_mode_enabled = False
@@ -308,9 +317,14 @@ class PdfViewer(QScrollArea):
         self._render_all()
 
     def _render_all(self):
-        """Render all pages at the current zoom level."""
+        """Render all pages at the current zoom level.
+
+        Every page widget is rebuilt, so any state living on a PageLabel must
+        be restored from viewer-level state at the end of this method.
+        """
         # Clear existing
         for lbl in self._page_labels:
+            lbl.cancel_inline_edit()
             self._layout.removeWidget(lbl)
             lbl.deleteLater()
         self._page_labels.clear()
@@ -322,6 +336,14 @@ class PdfViewer(QScrollArea):
             lbl = self._render_page(i)
             self._layout.addWidget(lbl)
             self._page_labels.append(lbl)
+
+        # Re-apply the active result marker onto the fresh labels.
+        if (
+            self._active_rect is not None
+            and self._active_page is not None
+            and 0 <= self._active_page < len(self._page_labels)
+        ):
+            self._page_labels[self._active_page].set_active_highlight(self._active_rect)
 
     def _render_page(self, page_index):
         """Render a single page to a PageLabel."""
@@ -355,10 +377,51 @@ class PdfViewer(QScrollArea):
 
         return lbl
 
+    def _scroll_anchor(self):
+        """Current reading position as (page_index, fraction down that page).
+
+        Anchored on the viewport centre — the same point current_page() uses —
+        so restoring the anchor keeps the reader on the page they were on.
+        """
+        if not self._page_labels:
+            return None
+        centre = self.verticalScrollBar().value() + self.viewport().height() / 2
+        for i, lbl in enumerate(self._page_labels):
+            geo = lbl.geometry()
+            if geo.top() <= centre <= geo.bottom():
+                return i, (centre - geo.top()) / max(geo.height(), 1)
+        # Centre fell in the gap between pages; anchor to the nearest one.
+        if centre < self._page_labels[0].geometry().top():
+            return 0, 0.0
+        return len(self._page_labels) - 1, 1.0
+
+    def _restore_scroll_anchor(self, anchor):
+        if anchor is None:
+            return
+        page_index, fraction = anchor
+        if not 0 <= page_index < len(self._page_labels):
+            return
+        geo = self._page_labels[page_index].geometry()
+        centre = geo.top() + fraction * geo.height()
+        self.verticalScrollBar().setValue(
+            int(centre - self.viewport().height() / 2)
+        )
+
     def set_zoom(self, zoom):
-        """Set the zoom level and re-render."""
+        """Set the zoom level and re-render, keeping the reader's place."""
+        anchor = self._scroll_anchor()
         self._zoom = max(0.05, min(zoom, 5.0))
         self._render_all()
+        # The new page geometry has to exist before the anchor can be mapped
+        # onto it. Deferring to the event loop is not enough — the timer fires
+        # before the layout is recomputed — so force the layout here.
+        self._layout.activate()
+        self._container.adjustSize()
+        self._restore_scroll_anchor(anchor)
+        # Belt and braces: if the scroll range only widens on a later resize
+        # event, the value above would have been clamped. Re-apply once Qt has
+        # settled.
+        QTimer.singleShot(0, lambda a=anchor: self._restore_scroll_anchor(a))
         self.zoom_changed.emit(self._zoom)
 
     def zoom_in(self):
@@ -366,6 +429,73 @@ class PdfViewer(QScrollArea):
 
     def zoom_out(self):
         self.set_zoom(self._zoom - 0.25)
+
+    # ── Fit modes ────────────────────────────────────────────
+    #
+    # These live on the viewer because only the viewer knows the chrome it
+    # adds around a page: container margins plus whichever scrollbars show.
+
+    def _chrome_width(self):
+        """Horizontal space the viewer itself consumes, as things stand now."""
+        margins = self._layout.contentsMargins()
+        bar = self.verticalScrollBar()
+        return margins.left() + margins.right() + (bar.width() if bar.isVisible() else 0)
+
+    def _chrome_height(self):
+        """Vertical space the viewer itself consumes, as things stand now."""
+        margins = self._layout.contentsMargins()
+        bar = self.horizontalScrollBar()
+        return margins.top() + margins.bottom() + (bar.height() if bar.isVisible() else 0)
+
+    def _fit_available(self):
+        """Space a page may occupy, assuming both scrollbars are present.
+
+        Whether a scrollbar shows depends on the zoom we are about to pick, so
+        measuring the current state gives a different answer before and after
+        the fit. Normalising to "both bars showing" makes the result
+        deterministic and idempotent: reserving room needlessly costs a dozen
+        pixels, whereas not reserving it produces exactly the overflow these
+        fit modes exist to avoid.
+        """
+        margins = self._layout.contentsMargins()
+        vbar = self.verticalScrollBar()
+        hbar = self.horizontalScrollBar()
+        v_reserve = vbar.sizeHint().width()
+        h_reserve = hbar.sizeHint().height()
+
+        # viewport() already excludes a bar that is currently showing.
+        width = self.viewport().width() + (v_reserve if vbar.isVisible() else 0)
+        height = self.viewport().height() + (h_reserve if hbar.isVisible() else 0)
+
+        return (
+            width - v_reserve - margins.left() - margins.right(),
+            height - h_reserve - margins.top() - margins.bottom(),
+        )
+
+    def fit_width(self):
+        """Zoom so the widest page fits the viewport without overflowing."""
+        if not self._doc or len(self._doc) == 0:
+            return
+        widest = max(page.rect.width for page in self._doc)
+        if widest <= 0:
+            return
+        available, _ = self._fit_available()
+        if available <= 0:
+            return
+        self.set_zoom(available / widest)
+
+    def fit_page(self):
+        """Zoom so a whole page fits the viewport on both axes."""
+        if not self._doc or len(self._doc) == 0:
+            return
+        widest = max(page.rect.width for page in self._doc)
+        tallest = max(page.rect.height for page in self._doc)
+        if widest <= 0 or tallest <= 0:
+            return
+        avail_w, avail_h = self._fit_available()
+        if avail_w <= 0 or avail_h <= 0:
+            return
+        self.set_zoom(min(avail_w / widest, avail_h / tallest))
 
     def set_highlights(self, highlights_by_page):
         """Set highlight rectangles. highlights_by_page: dict of page_index -> [fitz.Rect]."""
@@ -380,11 +510,16 @@ class PdfViewer(QScrollArea):
 
     def clear_highlights(self):
         self._highlights.clear()
+        self._active_page = None
+        self._active_rect = None
         for lbl in self._page_labels:
             lbl.clear_highlights()
+            lbl.clear_active_highlight()
 
     def set_active_highlight(self, page_index, rect):
         """Highlight a single result rect in a distinct color."""
+        self._active_page = page_index
+        self._active_rect = rect
         for i, lbl in enumerate(self._page_labels):
             if i == page_index:
                 lbl.set_active_highlight(rect)
@@ -392,6 +527,8 @@ class PdfViewer(QScrollArea):
                 lbl.clear_active_highlight()
 
     def clear_active_highlight(self):
+        self._active_page = None
+        self._active_rect = None
         for lbl in self._page_labels:
             lbl.clear_active_highlight()
 

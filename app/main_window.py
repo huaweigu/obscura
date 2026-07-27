@@ -775,22 +775,12 @@ class MainWindow(QMainWindow):
             self._viewer.zoom_out()
 
     def _fit_width(self):
-        if not self._doc or not self._viewer:
-            return
-        page = self._doc[0]
-        viewport_width = self._viewer.viewport().width()
-        new_zoom = viewport_width / page.rect.width
-        self._viewer.set_zoom(new_zoom)
+        if self._viewer:
+            self._viewer.fit_width()
 
     def _fit_page(self):
-        if not self._doc or not self._viewer:
-            return
-        page = self._doc[0]
-        viewport_w = self._viewer.viewport().width()
-        viewport_h = self._viewer.viewport().height()
-        zoom_w = viewport_w / page.rect.width
-        zoom_h = viewport_h / page.rect.height
-        self._viewer.set_zoom(min(zoom_w, zoom_h))
+        if self._viewer:
+            self._viewer.fit_page()
 
     def _on_thumbnail_clicked(self, page_index):
         if self._viewer:
