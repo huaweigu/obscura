@@ -6,9 +6,13 @@ import pytest
 from app.batch_processor import (
     BatchResult,
     find_files,
+    find_image_files,
     image_to_pdf,
     process_folder,
     redact_file,
+    search_file,
+    search_folder,
+    shrink_images,
 )
 
 
@@ -164,66 +168,6 @@ class TestProcessFolder:
 class TestMultiKeyword:
     """Test multi-keyword redaction and re-run scenarios."""
 
-    @pytest.fixture()
-    def tax_tree(self, tmp_path):
-        """Mimic a tax folder with PDFs and images across subfolders."""
-        # w2/ - PDF with employer name and employee name
-        w2 = tmp_path / "w2"
-        w2.mkdir()
-        doc = fitz.open()
-        page = doc.new_page()
-        page.insert_text((72, 72), (
-            "W-2 Wage and Tax Statement\n"
-            "Employer: Acme Corp\n"
-            "Employee: John Smith\n"
-            "SSN: 123-45-6789\n"
-            "Wages: $150,000"
-        ), fontsize=12)
-        doc.save(str(w2 / "w2_john.pdf"))
-        doc.close()
-
-        # brokerage/ - PDF with account holder
-        brokerage = tmp_path / "brokerage"
-        brokerage.mkdir()
-        doc = fitz.open()
-        page = doc.new_page()
-        page.insert_text((72, 72), (
-            "1099-B Consolidated Statement\n"
-            "Account Holder: John Smith\n"
-            "Acme Corp RSU Sale\n"
-            "Proceeds: $50,000"
-        ), fontsize=12)
-        doc.save(str(brokerage / "1099b.pdf"))
-        doc.close()
-
-        # donation/ - PDF without target keywords
-        donation = tmp_path / "donation"
-        donation.mkdir()
-        doc = fitz.open()
-        page = doc.new_page()
-        page.insert_text((72, 72), (
-            "Charitable Donation Receipt\n"
-            "Organization: Local Food Bank\n"
-            "Amount: $500"
-        ), fontsize=12)
-        doc.save(str(donation / "receipt.pdf"))
-        doc.close()
-
-        # hsa/ - another PDF with employee name
-        hsa = tmp_path / "hsa"
-        hsa.mkdir()
-        doc = fitz.open()
-        page = doc.new_page()
-        page.insert_text((72, 72), (
-            "HSA 1099-SA\n"
-            "Account Holder: John Smith\n"
-            "Distributions: $2,000"
-        ), fontsize=12)
-        doc.save(str(hsa / "1099sa.pdf"))
-        doc.close()
-
-        return tmp_path
-
     def test_multiple_keywords_single_pass(self, tax_tree, tmp_path):
         out = tmp_path / "out"
         result = process_folder(str(tax_tree), ["Acme", "Smith"], str(out))
@@ -271,3 +215,216 @@ class TestMultiKeyword:
         assert os.path.isdir(str(out / "brokerage"))
         assert os.path.isdir(str(out / "donation"))
         assert os.path.isdir(str(out / "hsa"))
+
+
+# ── Search without redaction ────────────────────────────────
+#
+# search_file / search_folder are the dry-run half of the batch feature —
+# they tell the user what *would* be redacted. Neither had any coverage.
+
+
+class TestSearchFile:
+    def test_counts_matches_in_a_pdf(self, tmp_path):
+        path = tmp_path / "one.pdf"
+        doc = fitz.open()
+        page = doc.new_page()
+        page.insert_text((72, 72), "Acme here and Acme again", fontsize=11)
+        doc.save(str(path))
+        doc.close()
+
+        assert search_file(str(path), "Acme") == 2
+
+    def test_accepts_a_bare_string_or_a_list(self, tmp_path):
+        path = tmp_path / "two.pdf"
+        doc = fitz.open()
+        doc.new_page().insert_text((72, 72), "Acme and Globex", fontsize=11)
+        doc.save(str(path))
+        doc.close()
+
+        assert search_file(str(path), "Acme") == 1
+        assert search_file(str(path), ["Acme", "Globex"]) == 2
+
+    def test_returns_zero_when_absent(self, tmp_path):
+        path = tmp_path / "three.pdf"
+        doc = fitz.open()
+        doc.new_page().insert_text((72, 72), "nothing to see", fontsize=11)
+        doc.save(str(path))
+        doc.close()
+
+        assert search_file(str(path), "Acme") == 0
+
+    def test_does_not_modify_the_file(self, tmp_path):
+        path = tmp_path / "untouched.pdf"
+        doc = fitz.open()
+        doc.new_page().insert_text((72, 72), "Acme stays put", fontsize=11)
+        doc.save(str(path))
+        doc.close()
+        before = path.read_bytes()
+
+        search_file(str(path), "Acme")
+
+        assert path.read_bytes() == before
+        reopened = fitz.open(str(path))
+        assert "Acme" in reopened[0].get_text("text")
+        reopened.close()
+
+
+class TestSearchFolder:
+    def test_reports_only_files_with_matches(self, tax_tree):
+        result = search_folder(str(tax_tree), "Acme")
+        assert result.total_files > 0
+        matched = [rel for rel, _count in result.matches]
+        assert len(matched) == 2  # w2 and brokerage
+        assert all(count > 0 for _rel, count in result.matches)
+        assert result.errors == []
+
+    def test_leaves_the_source_folder_untouched(self, tax_tree):
+        target = tax_tree / "w2" / "w2_john.pdf"
+        before = target.read_bytes()
+
+        search_folder(str(tax_tree), "Acme")
+
+        assert target.read_bytes() == before
+
+    def test_reports_progress_for_every_file(self, tax_tree):
+        seen = []
+        search_folder(
+            str(tax_tree),
+            "Acme",
+            progress_callback=lambda i, total, name, count: seen.append(
+                (i, total, name)
+            ),
+        )
+        assert len(seen) == seen[0][1]  # one callback per file
+        assert [i for i, _t, _n in seen] == list(range(len(seen)))
+
+    def test_no_matches_gives_an_empty_list(self, tax_tree):
+        result = search_folder(str(tax_tree), "NOTHING_MATCHES_THIS")
+        assert result.matches == []
+        assert result.total_files > 0
+
+    def test_search_agrees_with_what_redaction_removes(self, tax_tree, tmp_path):
+        """The dry run must predict the real run."""
+        searched = search_folder(str(tax_tree), "Acme")
+        out = tmp_path / "out"
+        redacted = process_folder(str(tax_tree), "Acme", str(out))
+        assert len(searched.matches) == redacted.files_with_matches
+
+
+# ── Image discovery and shrinking ───────────────────────────
+
+
+class TestFindImageFiles:
+    # Note: the sample_image fixture writes into tmp_path itself, so these
+    # tests scan a dedicated subfolder rather than picking that file up.
+
+    def test_finds_only_images(self, tmp_path, sample_image):
+        import shutil
+
+        root = tmp_path / "scan"
+        root.mkdir()
+        shutil.copy(sample_image, root / "a.jpg")
+        doc = fitz.open()
+        doc.new_page()
+        doc.save(str(root / "not_an_image.pdf"))
+        doc.close()
+        (root / "notes.txt").write_text("ignore me")
+
+        found = find_image_files(str(root))
+        assert [os.path.basename(p) for p in found] == ["a.jpg"]
+
+    def test_recurses_by_default(self, tmp_path, sample_image):
+        import shutil
+
+        root = tmp_path / "scan"
+        sub = root / "nested"
+        sub.mkdir(parents=True)
+        shutil.copy(sample_image, root / "top.jpg")
+        shutil.copy(sample_image, sub / "deep.jpg")
+
+        assert len(find_image_files(str(root))) == 2
+        assert len(find_image_files(str(root), recursive=False)) == 1
+
+    def test_returns_sorted_paths(self, tmp_path, sample_image):
+        import shutil
+
+        root = tmp_path / "scan"
+        root.mkdir()
+        for name in ("c.jpg", "a.jpg", "b.jpg"):
+            shutil.copy(sample_image, root / name)
+        found = [os.path.basename(p) for p in find_image_files(str(root))]
+        assert found == sorted(found)
+
+
+class TestShrinkImages:
+    def test_reduces_file_size(self, tmp_path, sample_image):
+        import shutil
+
+        src = tmp_path / "src"
+        src.mkdir()
+        shutil.copy(sample_image, src / "big.jpg")
+        out = tmp_path / "out"
+
+        result = shrink_images(str(src), str(out), max_dimension=200)
+
+        assert result.processed == 1
+        assert result.errors == []
+        assert result.new_bytes <= result.original_bytes
+        assert (out / "big.jpg").exists()
+
+    def test_caps_the_longest_side(self, tmp_path, sample_image):
+        import shutil
+
+        from PIL import Image
+
+        src = tmp_path / "src"
+        src.mkdir()
+        shutil.copy(sample_image, src / "big.jpg")
+        out = tmp_path / "out"
+
+        shrink_images(str(src), str(out), max_dimension=120)
+
+        with Image.open(out / "big.jpg") as img:
+            assert max(img.size) <= 120
+
+    def test_leaves_the_originals_alone(self, tmp_path, sample_image):
+        import shutil
+
+        src = tmp_path / "src"
+        src.mkdir()
+        shutil.copy(sample_image, src / "big.jpg")
+        before = (src / "big.jpg").read_bytes()
+
+        shrink_images(str(src), str(tmp_path / "out"), max_dimension=100)
+
+        assert (src / "big.jpg").read_bytes() == before
+
+    def test_reports_progress(self, tmp_path, sample_image):
+        import shutil
+
+        src = tmp_path / "src"
+        src.mkdir()
+        for name in ("a.jpg", "b.jpg"):
+            shutil.copy(sample_image, src / name)
+
+        seen = []
+        shrink_images(
+            str(src),
+            str(tmp_path / "out"),
+            max_dimension=150,
+            progress_callback=lambda *args: seen.append(args),
+        )
+        assert len(seen) == 2
+
+    def test_non_image_files_are_preserved(self, tmp_path, sample_image):
+        import shutil
+
+        src = tmp_path / "src"
+        src.mkdir()
+        shutil.copy(sample_image, src / "pic.jpg")
+        (src / "readme.txt").write_text("keep me")
+        out = tmp_path / "out"
+
+        shrink_images(str(src), str(out), max_dimension=150)
+
+        assert (out / "readme.txt").read_text() == "keep me"
