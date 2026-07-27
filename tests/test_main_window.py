@@ -1,3 +1,4 @@
+from unittest import mock
 
 from app.main_window import SegmentedControl, WelcomeWidget
 
@@ -241,6 +242,42 @@ class TestPanelToggle:
             assert fresh._is_panel_open() is False
         finally:
             fresh.close()
+
+    def test_corrupt_stored_width_does_not_stop_startup(self, qapp, tmp_path):
+        """Settings files are user-editable text; a bad value must not brick
+        the app on launch."""
+        from PySide6.QtCore import QSettings as RealQSettings
+
+        from app.main_window import PANEL_DEFAULT_WIDTH, MainWindow
+
+        ini = tmp_path / "corrupt.ini"
+        ini.write_text("[panel]\nopen=true\nwidth=not-a-number\n")
+
+        settings = RealQSettings(str(ini), RealQSettings.Format.IniFormat)
+        with mock.patch("app.main_window.QSettings", lambda *a, **k: settings):
+            win = MainWindow()
+            try:
+                assert win._panel_width == PANEL_DEFAULT_WIDTH
+                assert win._is_panel_open() is True
+            finally:
+                win.close()
+
+    def test_nonsense_stored_open_flag_falls_back_to_closed(self, qapp, tmp_path):
+        from PySide6.QtCore import QSettings as RealQSettings
+
+        from app.main_window import MainWindow
+
+        ini = tmp_path / "weird.ini"
+        ini.write_text("[panel]\nopen=banana\nwidth=-5\n")
+
+        settings = RealQSettings(str(ini), RealQSettings.Format.IniFormat)
+        with mock.patch("app.main_window.QSettings", lambda *a, **k: settings):
+            win = MainWindow()
+            try:
+                assert win._panel_width == 260  # negative width rejected
+                assert isinstance(win._is_panel_open(), bool)
+            finally:
+                win.close()
 
     def test_panel_width_persists_across_windows(self, main_window):
         from app.main_window import MainWindow

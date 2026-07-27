@@ -163,9 +163,13 @@ class DocumentState:
     is_dirty: bool = False
 
     @property
+    def base_name(self) -> str:
+        return self.file_path.split("/")[-1] if self.file_path else "Untitled"
+
+    @property
     def display_name(self) -> str:
-        name = self.file_path.split("/")[-1] if self.file_path else "Untitled"
-        return f"{name} •" if self.is_dirty else name
+        """Tab title — bulleted while there are unsaved changes."""
+        return f"{self.base_name} •" if self.is_dirty else self.base_name
 
 
 # ── Main Window ─────────────────────────────────────────────
@@ -360,12 +364,22 @@ class MainWindow(QMainWindow):
         self._search_panel.focus_input()
 
     def _restore_panel_settings(self):
-        self._panel_width = int(
-            self._settings.value("panel/width", PANEL_DEFAULT_WIDTH)
-        )
-        if self._panel_width <= 0:
-            self._panel_width = PANEL_DEFAULT_WIDTH
-        open_ = self._settings.value("panel/open", False, type=bool)
+        """Load the stored panel preference.
+
+        Settings live in a user-editable file, so every value here is treated
+        as untrusted: a hand-mangled width must not stop the app launching.
+        """
+        try:
+            width = int(self._settings.value("panel/width", PANEL_DEFAULT_WIDTH))
+        except (TypeError, ValueError):
+            width = PANEL_DEFAULT_WIDTH
+        self._panel_width = width if width > 0 else PANEL_DEFAULT_WIDTH
+
+        try:
+            open_ = bool(self._settings.value("panel/open", False, type=bool))
+        except (TypeError, ValueError):
+            open_ = False
+
         self._set_panel_open(open_, remember=False)
 
     def _save_panel_settings(self):
@@ -608,14 +622,23 @@ class MainWindow(QMainWindow):
 
         self._update_central_view()
 
+    def _tab_index_of(self, state):
+        """Index of `state` by identity, or -1.
+
+        DocumentState is a dataclass, so list.index() would match on field
+        equality and could resolve to a different tab.
+        """
+        for index, candidate in enumerate(self._tab_states):
+            if candidate is state:
+                return index
+        return -1
+
     def _mark_dirty(self, state, dirty=True):
         """Flag unsaved changes and reflect it in the tab title."""
         state.is_dirty = dirty
-        try:
-            index = self._tab_states.index(state)
-        except ValueError:
-            return
-        self._tab_widget.setTabText(index, state.display_name)
+        index = self._tab_index_of(state)
+        if index >= 0:
+            self._tab_widget.setTabText(index, state.display_name)
 
     def _confirm_discard(self, state) -> bool:
         """Ask about unsaved changes. False means the user cancelled."""
@@ -628,7 +651,7 @@ class MainWindow(QMainWindow):
         answer = QMessageBox.warning(
             self,
             "Unsaved Changes",
-            f"{state.display_name.rstrip(' •')} has unsaved changes.\n\n"
+            f"{state.base_name} has unsaved changes.\n\n"
             "Redactions and text edits are permanent once saved, and lost if "
             "you discard them.",
             QMessageBox.StandardButton.Save
@@ -764,30 +787,41 @@ class MainWindow(QMainWindow):
     def _rewrite_via_temp(self, state):
         """Full-save `state` over its own file. True if the file was replaced.
 
-        The document is reopened whatever happens, so a failure never leaves
-        the tab holding a closed document.
+        The document stays open until the replace has succeeded. Closing it
+        first meant a failing replace left the tab holding a closed document,
+        and reopening from the untouched original silently reverted applied
+        redactions while still advertising them as unsaved — so a retry would
+        write the unredacted file over the user's original.
         """
         directory = os.path.dirname(state.file_path)
         fd, tmp = tempfile.mkstemp(suffix=".pdf", dir=directory)
         os.close(fd)
 
-        replaced = False
         try:
             state.doc.save(tmp, garbage=4, deflate=True)
-            state.doc.close()
+            # Only let go of the original once the swap has happened: until
+            # then the open document is the only copy of the user's work.
             os.replace(tmp, state.file_path)
-            replaced = True
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Could not save PDF:\n{e}")
+            QMessageBox.critical(
+                self,
+                "Error",
+                f"Could not save PDF:\n{e}\n\n"
+                "Your changes are still open and unsaved. Use Save As to "
+                "write them somewhere else.",
+            )
+            return False
         finally:
             if os.path.exists(tmp):
                 os.unlink(tmp)
-            if state.doc.is_closed:
-                state.doc = fitz.open(state.file_path)
-                state.viewer.load_document(state.doc)
-                if state is self._current_state:
-                    self._thumb_panel.load_document(state.doc)
-        return replaced
+
+        # Reopen from the file just written so the viewer matches disk.
+        state.doc.close()
+        state.doc = fitz.open(state.file_path)
+        state.viewer.load_document(state.doc)
+        if state is self._current_state:
+            self._thumb_panel.load_document(state.doc)
+        return True
 
     def _save_file(self):
         state = self._current_state

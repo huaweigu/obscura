@@ -127,6 +127,43 @@ class TestDirtyTracking:
             _force_close(win)
 
 
+class TestDirtyMarkerTargetsTheRightTab:
+    def test_marking_uses_identity_not_equality(
+        self, qapp, sample_pdf, second_sample_pdf, accept_preview
+    ):
+        """DocumentState is a dataclass, so == compares fields. Looking a tab
+        up by equality can resolve to the wrong index."""
+        win = MainWindow()
+        win.show()
+        win._open_file_by_path(sample_pdf)
+        win._open_file_by_path(second_sample_pdf)
+        qapp.processEvents()
+        try:
+            win._tab_widget.setCurrentIndex(1)
+            win._do_search("UNIQUE_TERM_456")
+            win._redact_all()
+            qapp.processEvents()
+
+            assert "•" in win._tab_widget.tabText(1)
+            assert "•" not in win._tab_widget.tabText(0)
+            assert win._tab_states[0].is_dirty is False
+            assert win._tab_states[1].is_dirty is True
+        finally:
+            _force_close(win)
+
+    def test_tab_index_of_returns_the_identical_state(self, qapp, sample_pdf):
+        win = _open(qapp, sample_pdf)
+        try:
+            state = win._tab_states[0]
+            assert win._tab_index_of(state) == 0
+            # A structurally-equal state that is not in the list must not match.
+            import copy
+
+            assert win._tab_index_of(copy.copy(state)) == -1
+        finally:
+            _force_close(win)
+
+
 class TestCloseProtection:
     def test_closing_clean_tab_does_not_prompt(
         self, qapp, sample_pdf, answer_discard_prompt
@@ -258,9 +295,32 @@ class TestViewerLifetime:
         win.close()
 
 
+@pytest.fixture()
+def failing_save(monkeypatch):
+    """Force the incremental save AND the atomic replace to fail."""
+    errors = []
+    monkeypatch.setattr(
+        fitz.Document,
+        "saveIncr",
+        lambda self: (_ for _ in ()).throw(RuntimeError("cannot save incrementally")),
+    )
+    monkeypatch.setattr(
+        os, "replace", lambda *a: (_ for _ in ()).throw(OSError("Permission denied"))
+    )
+    monkeypatch.setattr(
+        QMessageBox,
+        "critical",
+        staticmethod(
+            lambda parent, title, text, *a, **k: errors.append(text)
+            or QMessageBox.StandardButton.Ok
+        ),
+    )
+    return errors
+
+
 class TestQuickSaveRecovery:
     def test_failed_replace_leaves_a_usable_document(
-        self, qapp, tmp_path, monkeypatch, accept_preview
+        self, qapp, tmp_path, accept_preview, failing_save
     ):
         """The fallback path closed the doc before os.replace. If replace
         raised, the tab was left pointing at a closed document."""
@@ -275,22 +335,6 @@ class TestQuickSaveRecovery:
             win._do_search("SECRET")
             win._redact_all()
 
-            # Force the incremental save to fail so the fallback runs, then
-            # make the fallback's replace fail too.
-            monkeypatch.setattr(
-                fitz.Document, "saveIncr", lambda self: (_ for _ in ()).throw(
-                    RuntimeError("cannot save incrementally")
-                )
-            )
-            monkeypatch.setattr(
-                os, "replace", lambda *a: (_ for _ in ()).throw(OSError("nope"))
-            )
-            monkeypatch.setattr(
-                QMessageBox,
-                "critical",
-                staticmethod(lambda *a, **k: QMessageBox.StandardButton.Ok),
-            )
-
             win._quick_save()
             qapp.processEvents()
 
@@ -302,8 +346,109 @@ class TestQuickSaveRecovery:
         finally:
             _force_close(win)
 
+    def test_failed_save_keeps_the_redactions_in_memory(
+        self, qapp, tmp_path, accept_preview, failing_save
+    ):
+        """A failed save must not silently revert applied redactions.
+
+        Reopening the document from the untouched original threw the user's
+        work away while still advertising it as unsaved.
+        """
+        path = tmp_path / "keepwork.pdf"
+        doc = fitz.open()
+        doc.new_page().insert_text((72, 72), "TOPSECRET payload")
+        doc.save(str(path))
+        doc.close()
+
+        win = _open(qapp, str(path))
+        try:
+            win._do_search("TOPSECRET")
+            win._redact_all()
+            assert "TOPSECRET" not in win._doc[0].get_text("text")
+
+            win._quick_save()
+            qapp.processEvents()
+
+            state = win._current_state
+            assert state.is_dirty is True, "failed save must stay dirty"
+            assert "TOPSECRET" not in state.doc[0].get_text("text"), (
+                "the redaction was reverted by a failed save"
+            )
+        finally:
+            _force_close(win)
+
+    def test_retrying_after_a_failed_save_writes_the_redacted_file(
+        self, qapp, tmp_path, accept_preview, monkeypatch
+    ):
+        """The dangerous sequence: redact, save fails, save again succeeds.
+
+        If the failure reverted the in-memory document, the retry would
+        cheerfully write the *unredacted* file over the original.
+        """
+        path = tmp_path / "retry.pdf"
+        doc = fitz.open()
+        doc.new_page().insert_text((72, 72), "TOPSECRET payload")
+        doc.save(str(path))
+        doc.close()
+
+        win = _open(qapp, str(path))
+        try:
+            win._do_search("TOPSECRET")
+            win._redact_all()
+
+            monkeypatch.setattr(
+                fitz.Document,
+                "saveIncr",
+                lambda self: (_ for _ in ()).throw(RuntimeError("no incr")),
+            )
+            monkeypatch.setattr(
+                QMessageBox,
+                "critical",
+                staticmethod(lambda *a, **k: QMessageBox.StandardButton.Ok),
+            )
+            real_replace = os.replace
+            monkeypatch.setattr(
+                os, "replace", lambda *a: (_ for _ in ()).throw(OSError("locked"))
+            )
+
+            win._quick_save()  # fails
+            qapp.processEvents()
+
+            monkeypatch.setattr(os, "replace", real_replace)
+            win._quick_save()  # retry, now succeeds
+            qapp.processEvents()
+
+            assert win._current_state.is_dirty is False
+            reopened = fitz.open(str(path))
+            text = reopened[0].get_text("text")
+            reopened.close()
+            assert "TOPSECRET" not in text, "retry wrote the unredacted document"
+        finally:
+            _force_close(win)
+
+    def test_failed_save_tells_the_user_what_to_do(
+        self, qapp, tmp_path, accept_preview, failing_save
+    ):
+        path = tmp_path / "advice.pdf"
+        doc = fitz.open()
+        doc.new_page().insert_text((72, 72), "SECRET here")
+        doc.save(str(path))
+        doc.close()
+
+        win = _open(qapp, str(path))
+        try:
+            win._do_search("SECRET")
+            win._redact_all()
+            win._quick_save()
+            qapp.processEvents()
+
+            assert failing_save, "no error was reported to the user"
+            assert "Save As" in failing_save[-1]
+        finally:
+            _force_close(win)
+
     def test_failed_replace_leaves_no_temp_file(
-        self, qapp, tmp_path, monkeypatch, accept_preview
+        self, qapp, tmp_path, accept_preview, failing_save
     ):
         path = tmp_path / "tmpcheck.pdf"
         doc = fitz.open()
@@ -315,20 +460,6 @@ class TestQuickSaveRecovery:
         try:
             win._do_search("SECRET")
             win._redact_all()
-
-            monkeypatch.setattr(
-                fitz.Document, "saveIncr", lambda self: (_ for _ in ()).throw(
-                    RuntimeError("cannot save incrementally")
-                )
-            )
-            monkeypatch.setattr(
-                os, "replace", lambda *a: (_ for _ in ()).throw(OSError("nope"))
-            )
-            monkeypatch.setattr(
-                QMessageBox,
-                "critical",
-                staticmethod(lambda *a, **k: QMessageBox.StandardButton.Ok),
-            )
 
             win._quick_save()
             qapp.processEvents()

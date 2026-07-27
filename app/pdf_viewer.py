@@ -420,8 +420,9 @@ class PdfViewer(QScrollArea):
         self._restore_scroll_anchor(anchor)
         # Belt and braces: if the scroll range only widens on a later resize
         # event, the value above would have been clamped. Re-apply once Qt has
-        # settled.
-        QTimer.singleShot(0, lambda a=anchor: self._restore_scroll_anchor(a))
+        # settled. `self` is passed as the context object so the callback is
+        # dropped if this viewer is destroyed first (closing a tab does that).
+        QTimer.singleShot(0, self, lambda a=anchor: self._restore_scroll_anchor(a))
         self.zoom_changed.emit(self._zoom)
 
     def zoom_in(self):
