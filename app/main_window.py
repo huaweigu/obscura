@@ -911,8 +911,8 @@ class MainWindow(QMainWindow):
                 matches = page.search_for(keyword, textpage=tp)
             else:
                 matches = page.search_for(keyword)
-            for rect in matches:
-                snippet = self._extract_snippet(page, rect, keyword, tp)
+            for occurrence, rect in enumerate(matches):
+                snippet = self._extract_snippet(page, keyword, occurrence, tp)
                 results.append(SearchResult(page_index, rect, snippet))
                 highlights.setdefault(page_index, []).append(rect)
 
@@ -920,15 +920,33 @@ class MainWindow(QMainWindow):
         self._search_panel.set_results(results)
         state.viewer.set_highlights(highlights)
 
-    def _extract_snippet(self, page, rect, keyword, textpage=None, context_chars=30):
-        """Get surrounding text around a match rectangle."""
+    def _extract_snippet(
+        self, page, keyword, occurrence, textpage=None, context_chars=30
+    ):
+        """Text surrounding the Nth occurrence of `keyword` on this page.
+
+        search_for() returns matches in reading order and str.find walks the
+        extracted text in that same order, so the Nth rect corresponds to the
+        Nth occurrence. Without the index every match on a page produced the
+        same snippet, which made the results list useless for choosing which
+        occurrence to redact.
+        """
         if textpage:
             text = page.get_text("text", textpage=textpage)
         else:
             text = page.get_text("text")
-        idx = text.lower().find(keyword.lower())
-        if idx == -1:
-            return keyword
+
+        needle = keyword.lower()
+        haystack = text.lower()
+        idx = -1
+        for _ in range(occurrence + 1):
+            idx = haystack.find(needle, idx + 1)
+            if idx == -1:
+                # Fewer text occurrences than rects — possible when the text
+                # layer differs from what search_for matched (ligatures, odd
+                # encodings). Fall back rather than mislabel the row.
+                return keyword
+
         start = max(0, idx - context_chars)
         end = min(len(text), idx + len(keyword) + context_chars)
         snippet = text[start:end].replace("\n", " ").strip()
