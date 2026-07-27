@@ -53,9 +53,16 @@ fit mode.
 ## Tests
 
 ```bash
-python -m pytest        # unit + end-to-end
-python -m ruff check .  # lint
+pip install -r requirements-dev.txt
+
+python -m pytest                              # unit + end-to-end
+python -m pytest --cov=app --cov-report=term  # with coverage
+python -m ruff check .                        # lint
 ```
+
+`tests/test_e2e_*.py` drive the real window — opening files, dragging to
+select, clicking thumbnails and bookmarks, redacting and saving — rather than
+calling functions in isolation. The rest are unit tests per module.
 
 ## Dependencies
 

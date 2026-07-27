@@ -150,3 +150,64 @@ def batch_tree(tmp_path):
     doc.close()
 
     return tmp_path
+
+
+@pytest.fixture()
+def tax_tree(tmp_path):
+    """Mimic a tax folder with PDFs and images across subfolders."""
+    # w2/ - PDF with employer name and employee name
+    w2 = tmp_path / "w2"
+    w2.mkdir()
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), (
+        "W-2 Wage and Tax Statement\n"
+        "Employer: Acme Corp\n"
+        "Employee: John Smith\n"
+        "SSN: 123-45-6789\n"
+        "Wages: $150,000"
+    ), fontsize=12)
+    doc.save(str(w2 / "w2_john.pdf"))
+    doc.close()
+
+    # brokerage/ - PDF with account holder
+    brokerage = tmp_path / "brokerage"
+    brokerage.mkdir()
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), (
+        "1099-B Consolidated Statement\n"
+        "Account Holder: John Smith\n"
+        "Acme Corp RSU Sale\n"
+        "Proceeds: $50,000"
+    ), fontsize=12)
+    doc.save(str(brokerage / "1099b.pdf"))
+    doc.close()
+
+    # donation/ - PDF without target keywords
+    donation = tmp_path / "donation"
+    donation.mkdir()
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), (
+        "Charitable Donation Receipt\n"
+        "Organization: Local Food Bank\n"
+        "Amount: $500"
+    ), fontsize=12)
+    doc.save(str(donation / "receipt.pdf"))
+    doc.close()
+
+    # hsa/ - another PDF with employee name
+    hsa = tmp_path / "hsa"
+    hsa.mkdir()
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), (
+        "HSA 1099-SA\n"
+        "Account Holder: John Smith\n"
+        "Distributions: $2,000"
+    ), fontsize=12)
+    doc.save(str(hsa / "1099sa.pdf"))
+    doc.close()
+
+    return tmp_path
