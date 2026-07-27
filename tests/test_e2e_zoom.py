@@ -170,8 +170,11 @@ class TestFitIsSticky:
         try:
             before = win._viewer.zoom
 
-            win.resize(800, 800)
+            # Stay above MIN_WINDOW_WIDTH, or the resize is silently clamped
+            # and this no longer tests the width it claims to.
+            win.resize(1000, 800)
             _settle(qapp)
+            assert win._viewer.width() == 1000
             assert win._viewer.zoom < before
 
             win.resize(1400, 800)
