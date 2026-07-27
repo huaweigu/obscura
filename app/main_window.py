@@ -818,7 +818,8 @@ class MainWindow(QMainWindow):
         # Reopen from the file just written so the viewer matches disk.
         state.doc.close()
         state.doc = fitz.open(state.file_path)
-        state.viewer.load_document(state.doc)
+        # Same document, rewritten — keep the reader where they were.
+        state.viewer.load_document(state.doc, reset_position=False)
         if state is self._current_state:
             self._thumb_panel.load_document(state.doc)
         return True

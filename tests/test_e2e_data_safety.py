@@ -127,6 +127,47 @@ class TestDirtyTracking:
             _force_close(win)
 
 
+class TestSavingKeepsTheReadersPlace:
+    def test_save_does_not_jump_back_to_page_one(
+        self, qapp, tmp_path, monkeypatch
+    ):
+        """The save fallback reloads the document. Reloading must not be
+        confused with opening one, which starts at the top."""
+        path = tmp_path / "long.pdf"
+        doc = fitz.open()
+        for i in range(20):
+            doc.new_page().insert_text((72, 72), f"Page {i + 1}")
+        doc.save(str(path))
+        doc.close()
+
+        win = MainWindow()
+        win.resize(1200, 800)
+        win.show()
+        win._open_file_by_path(str(path))
+        for _ in range(15):
+            qapp.processEvents()
+        try:
+            win._goto_page(12)
+            for _ in range(15):
+                qapp.processEvents()
+            before = win._viewer.current_page()
+            assert before == 12
+
+            # Force the fallback path that reloads the document.
+            monkeypatch.setattr(
+                fitz.Document,
+                "saveIncr",
+                lambda self: (_ for _ in ()).throw(RuntimeError("no incr")),
+            )
+            win._quick_save()
+            for _ in range(15):
+                qapp.processEvents()
+
+            assert win._viewer.current_page() == before
+        finally:
+            _force_close(win)
+
+
 class TestDirtyMarkerTargetsTheRightTab:
     def test_marking_uses_identity_not_equality(
         self, qapp, sample_pdf, second_sample_pdf, accept_preview

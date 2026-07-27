@@ -326,22 +326,27 @@ class PdfViewer(QScrollArea):
         """FIT_WIDTH, FIT_PAGE, or None when an explicit zoom is in force."""
         return self._fit_mode
 
-    def load_document(self, doc):
-        """Load a fitz.Document and render all pages."""
+    def load_document(self, doc, reset_position=True):
+        """Load a fitz.Document and render all pages.
+
+        `reset_position` starts the reader at the top, which is right when
+        opening a file. Callers that are reloading the *same* document — a
+        save that rewrites the file, say — pass False so the reader stays
+        where they were.
+        """
         self._doc = doc
         self._highlights.clear()
         self._active_page = None
         self._active_rect = None
-        # A newly opened document starts at the top, not wherever the scroll
-        # anchor of the previous render happened to land.
-        self._scroll_top_after_fit = True
+        self._scroll_top_after_fit = reset_position
         if self._fit_mode:
             # Sizes the page to the window instead of opening at a fixed 100%.
             # If the widget has no geometry yet, resizeEvent re-fits later.
             self._apply_fit()
         else:
             self._render_all()
-        self.verticalScrollBar().setValue(0)
+        if reset_position:
+            self.verticalScrollBar().setValue(0)
 
     def resizeEvent(self, event):
         """Keep the page fitted when the window or the side panel changes."""
@@ -556,21 +561,26 @@ class PdfViewer(QScrollArea):
         self._apply_fit()
 
     def _apply_fit(self):
-        """Recompute the zoom for the current fit mode and viewport."""
+        """Recompute the zoom for the current fit mode and viewport.
+
+        Returns True if that re-rendered. _run_pending_fit uses the answer to
+        tell a converged fit from one still settling, so every path here must
+        report a bool.
+        """
         if not self._doc or len(self._doc) == 0:
-            return
+            return False
         widest = max(page.rect.width for page in self._doc)
         tallest = max(page.rect.height for page in self._doc)
         if widest <= 0 or tallest <= 0:
-            return
+            return False
 
         avail_w, avail_h = self._fit_available()
         if avail_w <= 0:
-            return
+            return False
 
         if self._fit_mode == FIT_PAGE:
             if avail_h <= 0:
-                return
+                return False
             zoom = min(avail_w / widest, avail_h / tallest)
         else:
             zoom = avail_w / widest
